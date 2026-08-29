@@ -1,920 +1,731 @@
 # ============================================================
 # CRYPTO RESEARCH AGENT
-# CENTRAL ORCHESTRATOR
+# MAIN AGENT
 # ============================================================
 
-"""
-ANA AGENT
+from config import (
+    CORE_COINS,
+    DISCOVERY_ENABLED,
+    MIN_24H_VOLUME_USDT,
+)
 
-Bu dosya bütün strateji motorlarını yönetir.
+from market.data_engine import (
+    get_multi_timeframe_data,
+    discover_usdt_markets,
+    get_price,
+)
 
-MİMARİ:
+from strategies.futures import (
+    analyze_futures,
+)
 
-                    ┌──────────────┐
-                    │  DATA ENGINE │
-                    └──────┬───────┘
-                           │
-              ┌────────────┼────────────┐
-              ↓            ↓            ↓
-         INDICATORS    STRUCTURE     MARKET DATA
-              │            │            │
-              └────────────┼────────────┘
-                           ↓
-                 ┌──────────────────┐
-                 │  STRATEGY ENGINE │
-                 └────────┬─────────┘
-                          │
-             ┌────────────┼────────────┐
-             ↓            ↓            ↓
-          FUTURES        SPOT       SCALPING
-             │            │            │
-             └────────────┼────────────┘
-                          ↓
-                  SIGNAL AGGREGATOR
-                          ↓
-                    RISK FILTER
-                          ↓
-                     FINAL SIGNAL
+from strategies.spot import (
+    analyze_spot,
+)
 
-Ana prensip:
+from strategies.scalping import (
+    analyze_scalping,
+)
 
-1. Veri topla
-2. Teknik göstergeleri hesapla
-3. Market structure çıkar
-4. Futures analiz et
-5. Spot analiz et
-6. Scalping analiz et
-7. Sinyalleri karşılaştır
-8. Çakışan / zayıf sinyalleri ele
-9. Risk/RR kontrolü yap
-10. En kaliteli sinyali üret
+from strategies.scanner import (
+    scan_market,
+    print_scanner_report,
+)
 
-Bu dosya doğrudan emir göndermez.
-Execution katmanı daha sonra eklenecek.
-"""
+from engine.aggregator import (
+    aggregate,
+)
+
+from engine.risk import (
+    apply_risk,
+    risk_rejection_reason,
+)
+
+from engine.paper import (
+    PaperTradingEngine,
+)
 
 
 # ============================================================
-# IMPORTS
+# SETTINGS
 # ============================================================
 
-import traceback
-from datetime import datetime
+PAPER_BALANCE = 1000.0
+
+DISCOVERY_LIMIT = 10
+
+DATA_LIMIT = 200
+
+MAX_SIGNALS_PER_RUN = 10
 
 
-# ------------------------------------------------------------
-# MARKET MODULES
-# ------------------------------------------------------------
+# ============================================================
+# PRINT
+# ============================================================
 
-try:
-    from market.data_engine import (
-        get_klines
+def print_header():
+
+    print()
+    print("=" * 80)
+    print(
+        "CRYPTO RESEARCH AGENT"
     )
-except Exception:
-    get_klines = None
-
-
-try:
-    from market.indicators import (
-        calculate_indicators
+    print(
+        "MULTI STRATEGY / PAPER TRADING"
     )
-except Exception:
-    calculate_indicators = None
-
-
-try:
-    from market.structure import (
-        analyze_structure
-    )
-except Exception:
-    analyze_structure = None
-
-
-# ------------------------------------------------------------
-# STRATEGIES
-# ------------------------------------------------------------
-
-try:
-    from strategies.scalping import (
-        analyze_scalping
-    )
-except Exception:
-    analyze_scalping = None
-
-
-try:
-    from strategies.futures import (
-        analyze_futures
-    )
-except Exception:
-    analyze_futures = None
-
-
-try:
-    from strategies.spot import (
-        analyze_spot
-    )
-except Exception:
-    analyze_spot = None
+    print("=" * 80)
 
 
 # ============================================================
-# CONFIGURATION
+# SIGNAL REPORT
 # ============================================================
 
-MAIN_COINS = [
-
-    "BTCUSDT",
-    "ETHUSDT",
-    "SOLUSDT",
-    "BNBUSDT",
-    "XRPUSDT",
-
-    "DOTUSDT",
-    "NEARUSDT",
-    "JUPUSDT",
-    "MOVRUSDT",
-    "TNSRUSDT",
-]
-
-
-# ------------------------------------------------------------
-# DATA LIMITS
-# ------------------------------------------------------------
-
-LIMIT_15M = 300
-
-LIMIT_5M = 300
-
-LIMIT_1M = 300
-
-LIMIT_1H = 300
-
-LIMIT_4H = 300
-
-
-# ============================================================
-# SCORE THRESHOLDS
-# ============================================================
-
-MIN_FUTURES_SCORE = 7
-
-MIN_SPOT_SCORE = 7
-
-MIN_SCALPING_SCORE = 7
-
-
-# ============================================================
-# MARKET DATA
-# ============================================================
-
-def load_timeframes(symbol):
-
-    """
-    Bir coin için bütün gerekli timeframe'leri toplar.
-
-    4H:
-        Ana trend
-
-    1H:
-        Orta vadeli trend
-
-    15M:
-        Setup
-
-    5M:
-        Confirmation
-
-    1M:
-        Entry
-    """
-
-    result = {}
-
-    timeframes = {
-
-        "4h": LIMIT_4H,
-
-        "1h": LIMIT_1H,
-
-        "15m": LIMIT_15M,
-
-        "5m": LIMIT_5M,
-
-        "1m": LIMIT_1M,
-    }
-
-    if get_klines is None:
-
-        return result
-
-    for timeframe, limit in timeframes.items():
-
-        try:
-
-            data = get_klines(
-                symbol,
-                timeframe,
-                limit
-            )
-
-            if data:
-
-                result[timeframe] = data
-
-        except Exception as e:
-
-            print(
-                f"{symbol} {timeframe} "
-                f"VERI HATASI: {e}"
-            )
-
-    return result
-
-
-# ============================================================
-# INDICATORS
-# ============================================================
-
-def calculate_all_indicators(data):
-
-    """
-    Her timeframe için indikatörleri hesaplar.
-    """
-
-    result = {}
-
-    if calculate_indicators is None:
-
-        return result
-
-    for timeframe, candles in data.items():
-
-        try:
-
-            result[timeframe] = (
-                calculate_indicators(
-                    candles
-                )
-            )
-
-        except Exception as e:
-
-            print(
-                f"{timeframe} "
-                f"INDICATOR HATASI: {e}"
-            )
-
-            result[timeframe] = {}
-
-    return result
-
-
-# ============================================================
-# MARKET STRUCTURE
-# ============================================================
-
-def calculate_all_structures(data):
-
-    """
-    Her timeframe için market structure çıkarır.
-
-    Beklenen yapılar:
-
-    - BOS
-    - CHoCH
-    - MSB
-    - Liquidity Sweep
-    - FVG
-    - Order Block
-    - Displacement
-    - Swing High
-    - Swing Low
-    """
-
-    result = {}
-
-    if analyze_structure is None:
-
-        return result
-
-    for timeframe, candles in data.items():
-
-        try:
-
-            result[timeframe] = (
-                analyze_structure(
-                    candles
-                )
-            )
-
-        except Exception as e:
-
-            print(
-                f"{timeframe} "
-                f"STRUCTURE HATASI: {e}"
-            )
-
-            result[timeframe] = {}
-
-    return result
-
-
-# ============================================================
-# BTC REGIME
-# ============================================================
-
-def determine_btc_regime(
-    indicators,
-    structures
+def print_signal(
+    signal
 ):
-
-    """
-    BTC'nin genel piyasa rejimini belirler.
-
-    LONG:
-        Altcoin long işlemleri daha güvenli.
-
-    SHORT:
-        Short işlemler daha güvenli.
-
-    NEUTRAL:
-        Seçici davran.
-
-    RISK_OFF:
-        Yeni işlem açmak için çok daha sıkı filtre.
-    """
-
-    try:
-
-        btc_4h = structures.get(
-            "4h",
-            {}
-        )
-
-        btc_1h = structures.get(
-            "1h",
-            {}
-        )
-
-        bias_4h = btc_4h.get(
-            "bias",
-            "NEUTRAL"
-        )
-
-        bias_1h = btc_1h.get(
-            "bias",
-            "NEUTRAL"
-        )
-
-        if (
-            bias_4h in (
-                "BULLISH",
-                "WEAK_BULLISH"
-            )
-            and
-            bias_1h in (
-                "BULLISH",
-                "WEAK_BULLISH"
-            )
-        ):
-
-            return "LONG"
-
-        if (
-            bias_4h in (
-                "BEARISH",
-                "WEAK_BEARISH"
-            )
-            and
-            bias_1h in (
-                "BEARISH",
-                "WEAK_BEARISH"
-            )
-        ):
-
-            return "SHORT"
-
-        return "NEUTRAL"
-
-    except Exception:
-
-        return "NEUTRAL"
-
-
-# ============================================================
-# SCALPING
-# ============================================================
-
-def run_scalping(
-    symbol,
-    data,
-    indicators,
-    structures
-):
-
-    if analyze_scalping is None:
-
-        return {
-            "signal": "UNAVAILABLE",
-            "score": 0,
-        }
-
-    try:
-
-        return analyze_scalping(
-
-            symbol,
-
-            data.get("15m", []),
-
-            data.get("5m", []),
-
-            data.get("1m", []),
-
-            structures.get(
-                "15m",
-                {}
-            ),
-
-            structures.get(
-                "5m",
-                {}
-            ),
-
-            structures.get(
-                "1m",
-                {}
-            ),
-
-            indicators.get(
-                "15m",
-                {}
-            ),
-
-            indicators.get(
-                "5m",
-                {}
-            ),
-
-            indicators.get(
-                "1m",
-                {}),
-        )
-
-    except Exception as e:
-
-        return {
-
-            "signal": "ERROR",
-
-            "score": 0,
-
-            "reason": str(e),
-
-        }
-
-
-# ============================================================
-# FUTURES
-# ============================================================
-
-def run_futures(
-    symbol,
-    data,
-    indicators,
-    structures,
-    btc_regime
-):
-
-    if analyze_futures is None:
-
-        return {
-            "signal": "UNAVAILABLE",
-            "score": 0,
-        }
-
-    try:
-
-        return analyze_futures(
-
-            symbol,
-
-            data,
-
-            indicators,
-
-            structures,
-
-            btc_regime,
-
-        )
-
-    except Exception as e:
-
-        return {
-
-            "signal": "ERROR",
-
-            "score": 0,
-
-            "reason": str(e),
-
-        }
-
-
-# ============================================================
-# SPOT
-# ============================================================
-
-def run_spot(
-    symbol,
-    data,
-    indicators,
-    structures,
-    btc_regime
-):
-
-    if analyze_spot is None:
-
-        return {
-            "signal": "UNAVAILABLE",
-            "score": 0,
-        }
-
-    try:
-
-        return analyze_spot(
-
-            symbol,
-
-            data,
-
-            indicators,
-
-            structures,
-
-            btc_regime,
-
-        )
-
-    except Exception as e:
-
-        return {
-
-            "signal": "ERROR",
-
-            "score": 0,
-
-            "reason": str(e),
-
-        }
-
-
-# ============================================================
-# SIGNAL QUALITY
-# ============================================================
-
-def signal_quality(signal):
-
-    """
-    Sinyalin genel kalitesini hesaplar.
-
-    Skor dışında:
-
-    - confidence
-    - R/R
-    - timeframe confirmation
-    """
 
     if not signal:
+        return
 
-        return 0
+    print()
+    print("-" * 80)
 
-    score = 0
-
-    raw_score = signal.get(
-        "score",
-        0
+    print(
+        f"SYMBOL      : "
+        f"{signal.get('symbol')}"
     )
 
-    try:
+    print(
+        f"MARKET      : "
+        f"{signal.get('market')}"
+    )
 
-        raw_score = float(
-            raw_score
+    print(
+        f"SIDE        : "
+        f"{signal.get('side')}"
+    )
+
+    print(
+        f"ENTRY       : "
+        f"{signal.get('entry', 0):.8f}"
+    )
+
+    print(
+        f"STOP        : "
+        f"{signal.get('stop', 0):.8f}"
+    )
+
+    print(
+        f"TP1         : "
+        f"{signal.get('tp1', 0):.8f}"
+    )
+
+    print(
+        f"TP2         : "
+        f"{signal.get('tp2', 0):.8f}"
+    )
+
+    print(
+        f"R/R         : "
+        f"{signal.get('rr', 0):.2f}"
+    )
+
+    print(
+        f"SCORE       : "
+        f"{signal.get('score', 0)}"
+    )
+
+    print(
+        f"CONFIDENCE  : "
+        f"{signal.get('confidence', 0):.1f}%"
+    )
+
+    print(
+        f"STATUS      : "
+        f"{signal.get('status', 'N/A')}"
+    )
+
+    if "risk_status" in signal:
+
+        print(
+            f"RISK        : "
+            f"{signal.get('risk_status')}"
         )
 
-    except Exception:
-
-        raw_score = 0
-
-    score += raw_score
-
-    confidence = signal.get(
-        "confidence",
-        0
-    )
-
-    try:
-
-        confidence = float(
-            confidence
+        print(
+            f"RISK %      : "
+            f"{signal.get('risk_percent', 0):.2f}%"
         )
 
-    except Exception:
+        print(
+            f"POSITION    : "
+            f"{signal.get('position_percent', 0):.2f}%"
+        )
 
-        confidence = 0
+        print(
+            f"QUANTITY    : "
+            f"{signal.get('quantity', 0):.8f}"
+        )
 
-    score += (
-        confidence / 20
+    reasons = signal.get(
+        "reasons",
+        []
     )
 
-    rr = signal.get(
-        "rr",
-        0
-    )
+    if reasons:
 
-    try:
+        print()
+        print("REASONS:")
 
-        rr = float(rr)
+        for reason in reasons:
 
-    except Exception:
+            print(
+                f"  + {reason}"
+            )
 
-        rr = 0
-
-    if rr >= 2:
-
-        score += 2
-
-    if rr >= 2.5:
-
-        score += 2
-
-    return score
+    print("-" * 80)
 
 
 # ============================================================
-# CONFLICT CHECK
+# ANALYZE SYMBOL
 # ============================================================
 
-def check_conflict(
-    futures,
-    spot,
-    scalping
+def analyze_symbol(
+    symbol,
+    paper_engine,
 ):
+    """
+    Tek coin için:
+
+        Data
+         ↓
+        Futures
+         ↓
+        Spot
+         ↓
+        Scalping
+         ↓
+        Aggregator
+         ↓
+        Risk
+         ↓
+        Paper
 
     """
-    Stratejiler birbirine ters mi bakıyor?
 
-    Örneğin:
+    print()
+    print(
+        f"[ANALYZE] {symbol}"
+    )
 
-    Futures LONG
-    Spot LONG
-    Scalping LONG
+    # ========================================================
+    # DATA
+    # ========================================================
 
-    = güçlü uyum
+    try:
 
-    Futures LONG
-    Spot WAIT
-    Scalping SHORT
+        data = get_multi_timeframe_data(
 
-    = çatışma
-    """
+            symbol,
 
-    signals = []
+            timeframes=[
+                "4h",
+                "1h",
+                "15m",
+                "5m",
+                "1m",
+            ],
 
-    for result in (
-        futures,
-        spot,
-        scalping
-    ):
+            limit=DATA_LIMIT,
 
-        if not result:
-            continue
-
-        signal = result.get(
-            "signal"
         )
 
-        if signal in (
-            "LONG",
-            "SHORT"
-        ):
+    except Exception as exc:
 
-            signals.append(
+        print(
+            f"DATA ERROR: {exc}"
+        )
+
+        return None
+
+    if not data:
+        return None
+
+    # ========================================================
+    # FUTURES
+    # ========================================================
+
+    try:
+
+        futures_signal = analyze_futures(
+            symbol,
+            data
+        )
+
+    except Exception as exc:
+
+        print(
+            f"FUTURES ERROR: {exc}"
+        )
+
+        futures_signal = None
+
+    # ========================================================
+    # SPOT
+    # ========================================================
+
+    try:
+
+        spot_signal = analyze_spot(
+            symbol,
+            data
+        )
+
+    except Exception as exc:
+
+        print(
+            f"SPOT ERROR: {exc}"
+        )
+
+        spot_signal = None
+
+    # ========================================================
+    # SCALPING
+    # ========================================================
+
+    try:
+
+        scalping_signal = analyze_scalping(
+            symbol,
+            data
+        )
+
+    except Exception as exc:
+
+        print(
+            f"SCALPING ERROR: {exc}"
+        )
+
+        scalping_signal = None
+
+    # ========================================================
+    # PRINT RAW SIGNALS
+    # ========================================================
+
+    raw_signals = []
+
+    if futures_signal:
+        raw_signals.append(
+            futures_signal
+        )
+
+    if spot_signal:
+        raw_signals.append(
+            spot_signal
+        )
+
+    if scalping_signal:
+        raw_signals.append(
+            scalping_signal
+        )
+
+    for signal in raw_signals:
+
+        if signal.get(
+            "side"
+        ) != "WAIT":
+
+            print_signal(
                 signal
             )
 
-    if not signals:
+    # ========================================================
+    # AGGREGATOR
+    # ========================================================
 
-        return {
-            "status": "NONE",
-            "direction": None,
-            "agreement": 0,
-        }
+    try:
 
-    longs = signals.count(
-        "LONG"
+        aggregated = aggregate(
+            raw_signals
+        )
+
+    except Exception as exc:
+
+        print(
+            f"AGGREGATOR ERROR: {exc}"
+        )
+
+        return None
+
+    if not aggregated:
+
+        print(
+            f"[{symbol}] "
+            f"No qualified consensus."
+        )
+
+        return None
+
+    if aggregated.get(
+        "side"
+    ) == "WAIT":
+
+        print(
+            f"[{symbol}] "
+            f"Aggregator: WAIT"
+        )
+
+        return None
+
+    print()
+    print(
+        f"[{symbol}] "
+        f"AGGREGATED SIGNAL"
     )
 
-    shorts = signals.count(
-        "SHORT"
+    print_signal(
+        aggregated
     )
 
-    if longs > shorts:
+    # ========================================================
+    # RISK
+    # ========================================================
 
-        direction = "LONG"
+    approved = apply_risk(
+        aggregated,
+        PAPER_BALANCE
+    )
 
-        agreement = longs
+    if not approved:
 
-    elif shorts > longs:
+        reason = risk_rejection_reason(
+            aggregated
+        )
 
-        direction = "SHORT"
+        print(
+            f"[{symbol}] "
+            f"RISK REJECTED: "
+            f"{reason}"
+        )
 
-        agreement = shorts
+        return None
+
+    # ========================================================
+    # APPROVED
+    # ========================================================
+
+    print()
+    print(
+        f"[{symbol}] "
+        f"RISK APPROVED"
+    )
+
+    print_signal(
+        approved
+    )
+
+    # ========================================================
+    # PAPER POSITION
+    # ========================================================
+
+    position = (
+        paper_engine.open_position(
+            approved
+        )
+    )
+
+    if position:
+
+        print()
+        print(
+            f"[PAPER OPEN] "
+            f"{symbol} "
+            f"{position['side']} "
+            f"@ "
+            f"{position['entry']}"
+        )
 
     else:
 
-        return {
-            "status": "CONFLICT",
-            "direction": None,
-            "agreement": 0,
-        }
+        print(
+            f"[PAPER] "
+            f"Position not opened "
+            f"(duplicate/max positions)"
+        )
 
-    if agreement == len(signals):
-
-        status = "ALIGNED"
-
-    else:
-
-        status = "PARTIAL"
-
-    return {
-
-        "status": status,
-
-        "direction": direction,
-
-        "agreement": agreement,
-
-    }
+    return approved
 
 
 # ============================================================
-# FINAL DECISION
+# DISCOVERY
 # ============================================================
 
-def final_decision(
-    symbol,
-    futures,
-    spot,
-    scalping,
-    btc_regime
+def discover_symbols():
+
+    if not DISCOVERY_ENABLED:
+
+        return []
+
+    try:
+
+        candidates = scan_market(
+            limit=DISCOVERY_LIMIT
+        )
+
+        print_scanner_report(
+            candidates
+        )
+
+        return [
+            x["symbol"]
+            for x in candidates
+            if x.get("symbol")
+        ]
+
+    except Exception as exc:
+
+        print(
+            f"DISCOVERY ERROR: {exc}"
+        )
+
+        return []
+
+
+# ============================================================
+# BUILD SYMBOL LIST
+# ============================================================
+
+def build_symbol_list():
+
+    symbols = list(
+        CORE_COINS
+    )
+
+    discovered = (
+        discover_symbols()
+    )
+
+    for symbol in discovered:
+
+        if symbol not in symbols:
+
+            symbols.append(
+                symbol
+            )
+
+    return symbols
+
+
+# ============================================================
+# UPDATE PAPER PRICES
+# ============================================================
+
+def update_paper_positions(
+    paper_engine
 ):
 
-    """
-    Bütün stratejileri tek sinyale dönüştürür.
-
-    ÖNEMLİ:
-
-    Tek bir indikatör işlem açtıramaz.
-
-    En azından:
-
-        Structure
-        + Momentum
-        + Risk/RR
-
-    kombinasyonu gerekir.
-    """
-
-    conflict = check_conflict(
-        futures,
-        spot,
-        scalping
+    positions = (
+        paper_engine
+        .get_open_positions()
     )
 
-    candidates = []
+    if not positions:
+        return
 
-    for name, result in (
+    prices = {}
 
-        ("FUTURES", futures),
+    for position in positions:
 
-        ("SPOT", spot),
+        symbol = position[
+            "symbol"
+        ]
 
-        ("SCALPING", scalping),
+        try:
 
-    ):
+            prices[symbol] = (
+                get_price(
+                    symbol
+                )
+            )
 
-        if not result:
-            continue
+        except Exception as exc:
 
-        signal = result.get(
-            "signal"
+            print(
+                f"PRICE ERROR "
+                f"{symbol}: "
+                f"{exc}"
+            )
+
+    if not prices:
+        return
+
+    events = (
+        paper_engine.update_all(
+            prices
+        )
+    )
+
+    for event in events:
+
+        print(
+            f"[PAPER EVENT] "
+            f"{event}"
         )
 
-        if signal not in (
-            "LONG",
-            "SHORT"
-        ):
 
-            continue
+# ============================================================
+# MAIN
+# ============================================================
 
-        quality = signal_quality(
-            result
+def main():
+
+    print_header()
+
+    # ========================================================
+    # PAPER ENGINE
+    # ========================================================
+
+    paper_engine = (
+        PaperTradingEngine(
+            PAPER_BALANCE
         )
+    )
 
-        candidates.append({
+    # ========================================================
+    # SYMBOLS
+    # ========================================================
 
-            "type": name,
+    symbols = (
+        build_symbol_list()
+    )
 
-            "signal": signal,
+    print()
+    print(
+        f"Total symbols: "
+        f"{len(symbols)}"
+    )
 
-            "quality": quality,
+    print(
+        f"Core coins: "
+        f"{len(CORE_COINS)}"
+    )
 
-            "score": result.get(
+    # ========================================================
+    # ANALYSIS
+    # ========================================================
+
+    approved_signals = []
+
+    for symbol in symbols:
+
+        try:
+
+            signal = analyze_symbol(
+
+                symbol,
+
+                paper_engine
+
+            )
+
+            if signal:
+
+                approved_signals.append(
+                    signal
+                )
+
+        except Exception as exc:
+
+            print(
+                f"MAIN ERROR "
+                f"{symbol}: "
+                f"{exc}"
+            )
+
+    # ========================================================
+    # LIMIT SIGNALS
+    # ========================================================
+
+    approved_signals.sort(
+
+        key=lambda x: (
+
+            x.get(
+                "confidence",
+                0
+            ),
+
+            x.get(
                 "score",
                 0
             ),
 
-            "result": result,
+        ),
 
-        })
+        reverse=True,
 
-    if not candidates:
-
-        return {
-
-            "symbol": symbol,
-
-            "signal": "WAIT",
-
-            "confidence": 0,
-
-            "reason":
-                "Geçerli strateji sinyali yok",
-
-            "btc_regime":
-                btc_regime,
-
-        }
-
-    # --------------------------------------------------------
-    # SORT
-    # --------------------------------------------------------
-
-    candidates.sort(
-        key=lambda x:
-        x["quality"],
-        reverse=True
     )
 
-    best = candidates[0]
+    approved_signals = (
+        approved_signals[
+            :MAX_SIGNALS_PER_RUN
+        ]
+    )
 
-    direction = best[
-        "signal"
-    ]
+    # ========================================================
+    # UPDATE POSITIONS
+    # ========================================================
 
-    # --------------------------------------------------------
-    # CONFLICT PROTECTION
-    # --------------------------------------------------------
+    update_paper_positions(
+        paper_engine
+    )
 
-    if (
-        conflict["status"]
-        == "CONFLICT"
-    ):
+    # ========================================================
+    # FINAL REPORT
+    # ========================================================
 
-        return {
+    print()
+    print("=" * 80)
+    print(
+        "FINAL SIGNAL SUMMARY"
+    )
+    print("=" * 80)
 
-            "symbol": symbol,
+    if not approved_signals:
 
-            "signal": "WAIT",
+        print(
+            "Bu taramada onaylanmış "
+            "işlem bulunamadı."
+        )
 
-            "confidence": 0,
+    else:
 
-            "reason":
-                "Stratejiler yön konusunda çatışıyor",
+        for signal in (
+            approved_signals
+        ):
 
-            "btc_regime":
-                btc_regime,
+            print(
+                f"{signal.get('symbol')} | "
+                f"{signal.get('side')} | "
+                f"Confidence="
+                f"{signal.get('confidence', 0):.1f}% | "
+                f"Score="
+                f"{signal.get('score', 0)} | "
+                f"Entry="
+                f"{signal.get('entry', 0):.8f}"
+            )
 
-        }
+    # ========================================================
+    # PAPER REPORT
+    # ========================================================
 
-    # --------------------------------------------------------
-    # BTC REGIME FILTER
-    # --------------------------------------------------------
+    paper_engine.report()
 
-    if btc_regime == "LONG":
 
-        if direction == "SHORT":
+# ============================================================
+# ENTRY POINT
+# ============================================================
 
-            # Short tamamen yasak değil,
-            # ancak ekstra teyit gerekir.
+if __name__ == "__main__":
 
-            if best["score"] < 8:
-
-                return {
-
-                    "symbol": symbol,
-
-                   
+    main()
