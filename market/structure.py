@@ -1,490 +1,266 @@
 # ============================================================
-# CRYPTO RESEARCH AGENT
-# TECHNICAL INDICATORS
+# MARKET STRUCTURE ENGINE
 # ============================================================
 
 import pandas as pd
-import numpy as np
 
 
-# ------------------------------------------------------------
-# EMA
-# ------------------------------------------------------------
+def _find_swings(df, window=2):
 
-def ema(series, period):
-    return series.ewm(
-        span=period,
-        adjust=False
-    ).mean()
+    highs = []
+    lows = []
 
+    if df is None or len(df) < (window * 2 + 1):
+        return highs, lows
 
-def add_ema(df, fast=20, slow=50):
-    df = df.copy()
+    high_values = df["high"].astype(float).values
+    low_values = df["low"].astype(float).values
 
-    df["ema20"] = ema(
-        df["close"],
-        fast
-    )
+    for i in range(window, len(df) - window):
 
-    df["ema50"] = ema(
-        df["close"],
-        slow
-    )
+        left_high = high_values[
+            i - window:i
+        ]
 
-    return df
+        right_high = high_values[
+            i + 1:i + window + 1
+        ]
 
+        left_low = low_values[
+            i - window:i
+        ]
 
-# ------------------------------------------------------------
-# RSI
-# ------------------------------------------------------------
+        right_low = low_values[
+            i + 1:i + window + 1
+        ]
 
-def rsi(series, period=14):
-    delta = series.diff()
+        if (
+            high_values[i] > max(left_high)
+            and high_values[i] > max(right_high)
+        ):
+            highs.append({
+                "index": i,
+                "price": float(high_values[i])
+            })
 
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
+        if (
+            low_values[i] < min(left_low)
+            and low_values[i] < min(right_low)
+        ):
+            lows.append({
+                "index": i,
+                "price": float(low_values[i])
+            })
 
-    avg_gain = gain.ewm(
-        alpha=1 / period,
-        adjust=False,
-        min_periods=period
-    ).mean()
+    return highs, lows
 
-    avg_loss = loss.ewm(
-        alpha=1 / period,
-        adjust=False,
-        min_periods=period
-    ).mean()
 
-    rs = avg_gain / avg_loss.replace(
-        0,
-        np.nan
-    )
-
-    result = 100 - (
-        100 / (1 + rs)
-    )
-
-    return result.fillna(50)
-
-
-def add_rsi(df, period=14):
-    df = df.copy()
-
-    df["rsi14"] = rsi(
-        df["close"],
-        period
-    )
-
-    return df
-
-
-# ------------------------------------------------------------
-# MACD
-# ------------------------------------------------------------
-
-def macd(
-    series,
-    fast=12,
-    slow=26,
-    signal=9
-):
-    fast_ema = ema(
-        series,
-        fast
-    )
-
-    slow_ema = ema(
-        series,
-        slow
-    )
-
-    macd_line = (
-        fast_ema -
-        slow_ema
-    )
-
-    signal_line = ema(
-        macd_line,
-        signal
-    )
-
-    histogram = (
-        macd_line -
-        signal_line
-    )
-
-    return (
-        macd_line,
-        signal_line,
-        histogram
-    )
-
-
-def add_macd(df):
-    df = df.copy()
-
-    (
-        df["macd"],
-        df["macd_signal"],
-        df["macd_hist"]
-    ) = macd(
-        df["close"]
-    )
-
-    return df
-
-
-# ------------------------------------------------------------
-# ATR
-# ------------------------------------------------------------
-
-def atr(df, period=14):
-
-    high = df["high"]
-    low = df["low"]
-    close = df["close"]
-
-    previous_close = close.shift(1)
-
-    tr1 = high - low
-
-    tr2 = (
-        high -
-        previous_close
-    ).abs()
-
-    tr3 = (
-        low -
-        previous_close
-    ).abs()
-
-    true_range = pd.concat(
-        [
-            tr1,
-            tr2,
-            tr3
-        ],
-        axis=1
-    ).max(axis=1)
-
-    return true_range.ewm(
-        alpha=1 / period,
-        adjust=False,
-        min_periods=period
-    ).mean()
-
-
-def add_atr(df, period=14):
-    df = df.copy()
-
-    df["atr14"] = atr(
-        df,
-        period
-    )
-
-    return df
-
-
-# ------------------------------------------------------------
-# OBV
-# ------------------------------------------------------------
-
-def obv(df):
-
-    direction = np.sign(
-        df["close"].diff()
-    )
-
-    volume = df["volume"]
-
-    values = (
-        direction *
-        volume
-    ).fillna(0)
-
-    return values.cumsum()
-
-
-def add_obv(df):
-    df = df.copy()
-
-    df["obv"] = obv(df)
-
-    return df
-
-
-# ------------------------------------------------------------
-# VOLUME ANALYSIS
-# ------------------------------------------------------------
-
-def add_volume_metrics(
-    df,
-    period=20
-):
-    df = df.copy()
-
-    df["volume_ma20"] = (
-        df["volume"]
-        .rolling(period)
-        .mean()
-    )
-
-    df["volume_ratio"] = (
-        df["volume"] /
-        df["volume_ma20"]
-    )
-
-    return df
-
-
-# ------------------------------------------------------------
-# PRICE POSITION
-# ------------------------------------------------------------
-
-def add_price_position(
-    df,
-    lookback=20
-):
-    df = df.copy()
-
-    df["rolling_high"] = (
-        df["high"]
-        .rolling(lookback)
-        .max()
-    )
-
-    df["rolling_low"] = (
-        df["low"]
-        .rolling(lookback)
-        .min()
-    )
-
-    price_range = (
-        df["rolling_high"] -
-        df["rolling_low"]
-    )
-
-    df["range_position"] = (
-        (
-            df["close"] -
-            df["rolling_low"]
-        ) /
-        price_range.replace(
-            0,
-            np.nan
-        )
-    )
-
-    return df
-
-
-# ------------------------------------------------------------
-# MOMENTUM
-# ------------------------------------------------------------
-
-def add_momentum(df):
-    df = df.copy()
-
-    df["roc"] = (
-        df["close"]
-        .pct_change(10)
-        * 100
-    )
-
-    return df
-
-
-# ------------------------------------------------------------
-# ALL INDICATORS
-# ------------------------------------------------------------
-
-def calculate_indicators(df):
+def analyze_structure(df):
 
     if df is None:
-        return None
+        return {
+            "trend": "UNKNOWN",
+            "structure": "UNKNOWN",
+            "bos": False,
+            "choch": False,
+            "swing_high": None,
+            "swing_low": None,
+        }
 
-    if df.empty:
-        return df
+    if not isinstance(df, pd.DataFrame):
+        df = pd.DataFrame(df)
 
     required = [
-        "open",
         "high",
         "low",
         "close",
-        "volume"
     ]
 
     for column in required:
+
         if column not in df.columns:
-            raise ValueError(
-                f"Eksik kolon: {column}"
-            )
 
-    result = df.copy()
+            return {
+                "trend": "UNKNOWN",
+                "structure": "UNKNOWN",
+                "bos": False,
+                "choch": False,
+                "swing_high": None,
+                "swing_low": None,
+            }
 
-    result = add_ema(
-        result
+    if len(df) < 10:
+
+        return {
+            "trend": "UNKNOWN",
+            "structure": "INSUFFICIENT_DATA",
+            "bos": False,
+            "choch": False,
+            "swing_high": None,
+            "swing_low": None,
+        }
+
+    highs, lows = _find_swings(
+        df,
+        window=2
     )
 
-    result = add_rsi(
-        result
+    last_close = float(
+        df["close"].iloc[-1]
     )
 
-    result = add_macd(
-        result
+    # --------------------------------------------------------
+    # DEFAULT
+    # --------------------------------------------------------
+
+    trend = "SIDEWAYS"
+    structure = "RANGE"
+
+    bos = False
+    choch = False
+
+    # --------------------------------------------------------
+    # SWING LEVELS
+    # --------------------------------------------------------
+
+    swing_high = (
+        highs[-1]["price"]
+        if highs
+        else None
     )
 
-    result = add_atr(
-        result
+    swing_low = (
+        lows[-1]["price"]
+        if lows
+        else None
     )
 
-    result = add_obv(
-        result
-    )
+    # --------------------------------------------------------
+    # HIGHER HIGH / HIGHER LOW
+    # --------------------------------------------------------
 
-    result = add_volume_metrics(
-        result
-    )
+    higher_high = False
+    higher_low = False
 
-    result = add_price_position(
-        result
-    )
+    lower_high = False
+    lower_low = False
 
-    result = add_momentum(
-        result
-    )
+    if len(highs) >= 2:
 
-    return result
+        higher_high = (
+            highs[-1]["price"]
+            > highs[-2]["price"]
+        )
 
+        lower_high = (
+            highs[-1]["price"]
+            < highs[-2]["price"]
+        )
 
-# ------------------------------------------------------------
-# LATEST INDICATOR SNAPSHOT
-# ------------------------------------------------------------
+    if len(lows) >= 2:
 
-def latest_indicators(df):
+        higher_low = (
+            lows[-1]["price"]
+            > lows[-2]["price"]
+        )
 
-    if df is None or df.empty:
-        return {}
+        lower_low = (
+            lows[-1]["price"]
+            < lows[-2]["price"]
+        )
 
-    df = calculate_indicators(
-        df
-    )
+    # --------------------------------------------------------
+    # TREND
+    # --------------------------------------------------------
 
-    row = df.iloc[-1]
+    if higher_high and higher_low:
+
+        trend = "UP"
+        structure = "HH_HL"
+
+    elif lower_high and lower_low:
+
+        trend = "DOWN"
+        structure = "LH_LL"
+
+    else:
+
+        trend = "SIDEWAYS"
+        structure = "RANGE"
+
+    # --------------------------------------------------------
+    # BREAK OF STRUCTURE
+    # --------------------------------------------------------
+
+    if (
+        swing_high is not None
+        and last_close > swing_high
+    ):
+
+        bos = True
+
+    if (
+        swing_low is not None
+        and last_close < swing_low
+    ):
+
+        bos = True
+
+    # --------------------------------------------------------
+    # CHoCH
+    # --------------------------------------------------------
+
+    if (
+        trend == "UP"
+        and lower_low
+    ):
+
+        choch = True
+
+    elif (
+        trend == "DOWN"
+        and higher_high
+    ):
+
+        choch = True
+
+    # --------------------------------------------------------
+    # RESULT
+    # --------------------------------------------------------
 
     return {
-        "price": float(
-            row["close"]
-        ),
 
-        "ema20": float(
-            row["ema20"]
-        ),
+        "trend":
+            trend,
 
-        "ema50": float(
-            row["ema50"]
-        ),
+        "structure":
+            structure,
 
-        "rsi": float(
-            row["rsi14"]
-        ),
+        "bos":
+            bos,
 
-        "macd": float(
-            row["macd"]
-        ),
+        "choch":
+            choch,
 
-        "macd_signal": float(
-            row["macd_signal"]
-        ),
+        "swing_high":
+            swing_high,
 
-        "macd_hist": float(
-            row["macd_hist"]
-        ),
+        "swing_low":
+            swing_low,
 
-        "atr": float(
-            row["atr14"]
-        ),
+        "higher_high":
+            higher_high,
 
-        "obv": float(
-            row["obv"]
-        ),
+        "higher_low":
+            higher_low,
 
-        "volume_ratio": float(
-            row["volume_ratio"]
-        ),
+        "lower_high":
+            lower_high,
 
-        "roc": float(
-            row["roc"]
-        ),
+        "lower_low":
+            lower_low,
 
-        "range_position": float(
-            row["range_position"]
-        )
+        "last_close":
+            last_close,
+
     }
-
-
-# ------------------------------------------------------------
-# TREND CLASSIFICATION
-# ------------------------------------------------------------
-
-def classify_trend(snapshot):
-
-    if not snapshot:
-        return "UNKNOWN"
-
-    price = snapshot["price"]
-    ema20 = snapshot["ema20"]
-    ema50 = snapshot["ema50"]
-
-    if (
-        price > ema20 >
-        ema50
-    ):
-        return "UP"
-
-    if (
-        price < ema20 <
-        ema50
-    ):
-        return "DOWN"
-
-    return "SIDEWAYS"
-
-
-# ------------------------------------------------------------
-# MOMENTUM CLASSIFICATION
-# ------------------------------------------------------------
-
-def classify_momentum(snapshot):
-
-    if not snapshot:
-        return "UNKNOWN"
-
-    macd_hist = snapshot[
-        "macd_hist"
-    ]
-
-    rsi_value = snapshot[
-        "rsi"
-    ]
-
-    if (
-        macd_hist > 0 and
-        rsi_value >= 50
-    ):
-        return "STRONG"
-
-    if (
-        macd_hist > 0 or
-        rsi_value >= 50
-    ):
-        return "POSITIVE"
-
-    if (
-        macd_hist < 0 and
-        rsi_value < 50
-    ):
-        return "WEAK"
-
-    return "NEGATIVE"
