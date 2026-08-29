@@ -1,78 +1,62 @@
 # ============================================================
-# CRYPTO RESEARCH AGENT
 # SCALPING STRATEGY ENGINE
+# 15M -> 5M -> 1M
 # ============================================================
 
-from market.indicators import (
-    calculate_indicators,
-    latest_indicators,
-)
+from typing import Any, Dict, Optional
 
-from market.structure import (
-    analyze_structure,
-)
+from market.indicators import calculate_indicators
+from market.structure import analyze_structure
 
 
-# ============================================================
-# SETTINGS
-# ============================================================
-
-MIN_SCORE = 8
-
-MIN_RR = 1.5
-
-ATR_STOP_MULTIPLIER = 1.2
+def _float(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
-# ============================================================
-# WAIT SIGNAL
-# ============================================================
+def _indicator(df, names, default=0.0):
 
-def _wait(
-    symbol,
-    score=0,
-    reasons=None,
-):
+    if df is None or len(df) == 0:
+        return default
 
-    return {
-        "symbol": symbol,
-        "market": "SCALPING",
-        "side": "WAIT",
-        "score": score,
-        "confidence": 0,
-        "reasons": reasons or [],
-    }
+    for name in names:
+
+        if name in df.columns:
+
+            return _float(
+                df[name].iloc[-1],
+                default
+            )
+
+    return default
 
 
-# ============================================================
-# TREND
-# ============================================================
+def _trend(df):
 
-def _trend(
-    indicators,
-):
-
-    if not indicators:
+    if df is None or len(df) < 20:
         return "UNKNOWN"
 
-    price = indicators.get(
-        "price"
+    try:
+        data = calculate_indicators(df)
+    except Exception:
+        data = df
+
+    price = _indicator(
+        data,
+        ["close"]
     )
 
-    ema20 = indicators.get(
-        "ema20"
+    ema20 = _indicator(
+        data,
+        ["ema20", "EMA20"]
     )
 
-    ema50 = indicators.get(
-        "ema50"
+    ema50 = _indicator(
+        data,
+        ["ema50", "EMA50"]
     )
-
-    if (
-        price is None
-        or ema20 is None
-        or ema50 is None
-    ):
-        return "UNKNOWN"
 
     if price > ema20 > ema50:
         return "BULLISH"
@@ -83,575 +67,117 @@ def _trend(
     return "SIDEWAYS"
 
 
-# ============================================================
-# MOMENTUM
-# ============================================================
+def _structure(df):
 
-def _momentum(
-    indicators,
+    if df is None or len(df) < 20:
+        return {}
+
+    try:
+        data = calculate_indicators(df)
+        return analyze_structure(data)
+    except Exception:
+        return {}
+
+
+def _structure_direction(
+    structure
+):
+
+    trend = str(
+        structure.get(
+            "trend",
+            ""
+        )
+    ).upper()
+
+    if trend in (
+        "UP",
+        "BULLISH",
+        "LONG",
+    ):
+        return "LONG"
+
+    if trend in (
+        "DOWN",
+        "BEARISH",
+        "SHORT",
+    ):
+        return "SHORT"
+
+    return "UNKNOWN"
+
+
+def _has_bullish_trigger(
+    structure
+):
+
+    return (
+        structure.get("bos") is True
+        or structure.get("choch") is True
+    )
+
+
+def _has_bearish_trigger(
+    structure
+):
+
+    return (
+        structure.get("bos") is True
+        or structure.get("choch") is True
+    )
+
+
+def _levels(
+    price,
+    atr,
     direction,
 ):
 
-    if not indicators:
-        return 0
-
-    score = 0
-
-    rsi = indicators.get(
-        "rsi"
-    )
-
-    macd_hist = indicators.get(
-        "macd_hist"
-    )
-
-    volume_ratio = indicators.get(
-        "volume_ratio"
-    )
-
-    # --------------------------------------------------------
-    # RSI
-    # --------------------------------------------------------
+    if atr <= 0:
+        atr = price * 0.002
 
     if direction == "LONG":
 
-        if (
-            rsi is not None
-            and 45 <= rsi <= 70
-        ):
-            score += 1
-
-    elif direction == "SHORT":
-
-        if (
-            rsi is not None
-            and 30 <= rsi <= 55
-        ):
-            score += 1
-
-    # --------------------------------------------------------
-    # MACD
-    # --------------------------------------------------------
-
-    if macd_hist is not None:
-
-        if (
-            direction == "LONG"
-            and macd_hist > 0
-        ):
-            score += 1
-
-        elif (
-            direction == "SHORT"
-            and macd_hist < 0
-        ):
-            score += 1
-
-    # --------------------------------------------------------
-    # VOLUME
-    # --------------------------------------------------------
-
-    if volume_ratio is not None:
-
-        if volume_ratio >= 1.2:
-            score += 1
-
-    return score
-
-
-# ============================================================
-# STRUCTURE SCORE
-# ============================================================
-
-def _structure_score(
-    structure,
-    direction,
-):
-
-    if not structure:
-        return 0, []
-
-    score = 0
-    reasons = []
-
-    expected = (
-        "BULLISH"
-        if direction == "LONG"
-        else "BEARISH"
-    )
-
-    # --------------------------------------------------------
-    # BIAS
-    # --------------------------------------------------------
-
-    bias = structure.get(
-        "bias"
-    )
-
-    if bias == expected:
-
-        score += 2
-
-        reasons.append(
-            f"{direction} structure"
+        stop = price - (
+            atr * 1.2
         )
 
-    # --------------------------------------------------------
-    # BOS
-    # --------------------------------------------------------
-
-    for event in structure.get(
-        "bos",
-        []
-    )[-5:]:
-
-        if event.get(
-            "direction"
-        ) == expected:
-
-            score += 2
-
-            reasons.append(
-                f"{direction} BOS"
-            )
-
-            break
-
-    # --------------------------------------------------------
-    # CHoCH
-    # --------------------------------------------------------
-
-    for event in structure.get(
-        "choch",
-        []
-    )[-5:]:
-
-        if event.get(
-            "direction"
-        ) == expected:
-
-            score += 2
-
-            reasons.append(
-                f"{direction} CHoCH"
-            )
-
-            break
-
-    # --------------------------------------------------------
-    # MSB
-    # --------------------------------------------------------
-
-    for event in structure.get(
-        "msb",
-        []
-    )[-5:]:
-
-        if event.get(
-            "direction"
-        ) == expected:
-
-            score += 3
-
-            reasons.append(
-                f"{direction} MSB"
-            )
-
-            break
-
-    # --------------------------------------------------------
-    # LIQUIDITY SWEEP
-    # --------------------------------------------------------
-
-    for event in structure.get(
-        "liquidity_sweeps",
-        []
-    )[-5:]:
-
-        if event.get(
-            "direction"
-        ) == expected:
-
-            score += 2
-
-            reasons.append(
-                f"{direction} liquidity sweep"
-            )
-
-            break
-
-    # --------------------------------------------------------
-    # FVG
-    # --------------------------------------------------------
-
-    expected_fvg = expected
-
-    for event in structure.get(
-        "fvg",
-        []
-    )[-10:]:
-
-        if event.get(
-            "direction"
-        ) == expected_fvg:
-
-            score += 1
-
-            reasons.append(
-                f"{direction} FVG"
-            )
-
-            break
-
-    # --------------------------------------------------------
-    # ORDER BLOCK
-    # --------------------------------------------------------
-
-    for event in structure.get(
-        "order_blocks",
-        []
-    )[-10:]:
-
-        if event.get(
-            "direction"
-        ) == expected:
-
-            score += 1
-
-            reasons.append(
-                f"{direction} Order Block"
-            )
-
-            break
-
-    # --------------------------------------------------------
-    # DISPLACEMENT
-    # --------------------------------------------------------
-
-    for event in structure.get(
-        "displacement",
-        []
-    )[-5:]:
-
-        if event.get(
-            "direction"
-        ) == expected:
-
-            score += 2
-
-            reasons.append(
-                f"{direction} displacement"
-            )
-
-            break
-
-    return score, reasons
-
-
-# ============================================================
-# 1M ENTRY TRIGGER
-# ============================================================
-
-def _entry_trigger(
-    structure_1m,
-    indicators_1m,
-    direction,
-):
-
-    score = 0
-    reasons = []
-
-    expected = (
-        "BULLISH"
-        if direction == "LONG"
-        else "BEARISH"
-    )
-
-    # --------------------------------------------------------
-    # STRUCTURE
-    # --------------------------------------------------------
-
-    if structure_1m:
-
-        bias = structure_1m.get(
-            "bias"
+        tp1 = price + (
+            atr * 1.8
         )
 
-        if bias == expected:
-
-            score += 2
-
-            reasons.append(
-                "1M structure aligned"
-            )
-
-        # ----------------------------------------------------
-        # MSB
-        # ----------------------------------------------------
-
-        for event in structure_1m.get(
-            "msb",
-            []
-        )[-3:]:
-
-            if event.get(
-                "direction"
-            ) == expected:
-
-                score += 3
-
-                reasons.append(
-                    "1M MSB trigger"
-                )
-
-                break
-
-        # ----------------------------------------------------
-        # BOS
-        # ----------------------------------------------------
-
-        for event in structure_1m.get(
-            "bos",
-            []
-        )[-3:]:
-
-            if event.get(
-                "direction"
-            ) == expected:
-
-                score += 2
-
-                reasons.append(
-                    "1M BOS trigger"
-                )
-
-                break
-
-        # ----------------------------------------------------
-        # LIQUIDITY SWEEP
-        # ----------------------------------------------------
-
-        for event in structure_1m.get(
-            "liquidity_sweeps",
-            []
-        )[-3:]:
-
-            if event.get(
-                "direction"
-            ) == expected:
-
-                score += 3
-
-                reasons.append(
-                    "1M liquidity sweep"
-                )
-
-                break
-
-    # --------------------------------------------------------
-    # EMA
-    # --------------------------------------------------------
-
-    if indicators_1m:
-
-        trend = _trend(
-            indicators_1m
+        tp2 = price + (
+            atr * 2.5
         )
-
-        if (
-            direction == "LONG"
-            and trend == "BULLISH"
-        ):
-
-            score += 1
-
-            reasons.append(
-                "1M EMA aligned"
-            )
-
-        elif (
-            direction == "SHORT"
-            and trend == "BEARISH"
-        ):
-
-            score += 1
-
-            reasons.append(
-                "1M EMA aligned"
-            )
-
-    return score, reasons
-
-
-# ============================================================
-# TRADE PARAMETERS
-# ============================================================
-
-def _trade_parameters(
-    symbol,
-    candles,
-    indicators,
-    structure,
-    direction,
-):
-
-    if candles is None:
-        return None
-
-    if candles.empty:
-        return None
-
-    price = float(
-        candles.iloc[-1]["close"]
-    )
-
-    atr = indicators.get(
-        "atr"
-    )
-
-    if atr is None or atr <= 0:
-        return None
-
-    last_swings = structure.get(
-        "last_swings",
-        {}
-    )
-
-    # ========================================================
-    # LONG
-    # ========================================================
-
-    if direction == "LONG":
-
-        swing = last_swings.get(
-            "last_low"
-        )
-
-        swing_price = None
-
-        if swing:
-            swing_price = swing.get(
-                "price"
-            )
-
-        atr_stop = (
-            price -
-            atr * ATR_STOP_MULTIPLIER
-        )
-
-        if swing_price is not None:
-
-            stop = min(
-                float(swing_price),
-                atr_stop
-            )
-
-        else:
-
-            stop = atr_stop
-
-        risk = price - stop
-
-        if risk <= 0:
-            return None
-
-        tp1 = price + risk * 1.5
-        tp2 = price + risk * 2.0
-
-    # ========================================================
-    # SHORT
-    # ========================================================
 
     else:
 
-        swing = last_swings.get(
-            "last_high"
+        stop = price + (
+            atr * 1.2
         )
 
-        swing_price = None
-
-        if swing:
-            swing_price = swing.get(
-                "price"
-            )
-
-        atr_stop = (
-            price +
-            atr * ATR_STOP_MULTIPLIER
+        tp1 = price - (
+            atr * 1.8
         )
 
-        if swing_price is not None:
+        tp2 = price - (
+            atr * 2.5
+        )
 
-            stop = max(
-                float(swing_price),
-                atr_stop
-            )
+    return stop, tp1, tp2
 
-        else:
-
-            stop = atr_stop
-
-        risk = stop - price
-
-        if risk <= 0:
-            return None
-
-        tp1 = price - risk * 1.5
-        tp2 = price - risk * 2.0
-
-    rr = abs(
-        tp2 - price
-    ) / risk
-
-    if rr < MIN_RR:
-        return None
-
-    return {
-        "symbol": symbol,
-        "market": "SCALPING",
-        "side": direction,
-        "entry": price,
-        "stop": stop,
-        "tp1": tp1,
-        "tp2": tp2,
-        "rr": rr,
-    }
-
-
-# ============================================================
-# PUBLIC FUNCTION
-# ============================================================
 
 def analyze_scalping(
-    symbol,
-    data,
+    data: Dict[str, Any],
+    symbol: str,
+    btc_regime: Optional[str] = None,
 ):
 
-    """
-    Scalping sistemi:
+    symbol = symbol.upper()
 
-        15M = ana yön
-         ↓
-         5M = setup
-         ↓
-         1M = entry trigger
-
-    """
-
-    if not data:
-        return _wait(symbol)
-
-    df15 = data.get(
-        "15m"
-    )
-
-    df5 = data.get(
-        "5m"
-    )
-
-    df1 = data.get(
-        "1m"
-    )
+    df15 = data.get("15m")
+    df5 = data.get("5m")
+    df1 = data.get("1m")
 
     if (
         df15 is None
@@ -659,347 +185,185 @@ def analyze_scalping(
         or df1 is None
     ):
 
-        return _wait(
-            symbol,
-            reasons=[
-                "15M/5M/1M verisi eksik"
-            ]
-        )
+        return {
+            "symbol": symbol,
+            "direction": "WAIT",
+            "strategy": "SCALPING",
+            "score": 0,
+            "confidence": 0,
+            "reason":
+                "MISSING_TIMEFRAMES",
+        }
 
     if (
-        df15.empty
-        or df5.empty
-        or df1.empty
+        len(df15) < 50
+        or len(df5) < 50
+        or len(df1) < 50
     ):
 
-        return _wait(
-            symbol,
-            reasons=[
-                "Scalping verisi boş"
-            ]
-        )
+        return {
+            "symbol": symbol,
+            "direction": "WAIT",
+            "strategy": "SCALPING",
+            "score": 0,
+            "confidence": 0,
+            "reason":
+                "INSUFFICIENT_DATA",
+        }
 
     # ========================================================
-    # INDICATORS
+    # 15M — DIRECTION
     # ========================================================
 
-    ind15 = latest_indicators(
-        df15
+    trend15 = _trend(df15)
+
+    structure15 = _structure(df15)
+
+    direction15 = _structure_direction(
+        structure15
     )
-
-    ind5 = latest_indicators(
-        df5
-    )
-
-    ind1 = latest_indicators(
-        df1
-    )
-
-    # ========================================================
-    # STRUCTURE
-    # ========================================================
-
-    struct15 = analyze_structure(
-        calculate_indicators(
-            df15
-        )
-    )
-
-    struct5 = analyze_structure(
-        calculate_indicators(
-            df5
-        )
-    )
-
-    struct1 = analyze_structure(
-        calculate_indicators(
-            df1
-        )
-    )
-
-    # ========================================================
-    # 15M DIRECTION
-    # ========================================================
-
-    trend15 = _trend(
-        ind15
-    )
-
-    if trend15 == "SIDEWAYS":
-
-        return _wait(
-            symbol,
-            reasons=[
-                "15M yön belirsiz"
-            ]
-        )
-
-    if trend15 == "UNKNOWN":
-
-        return _wait(
-            symbol,
-            reasons=[
-                "15M trend hesaplanamadı"
-            ]
-        )
 
     if trend15 == "BULLISH":
 
         direction = "LONG"
 
-    else:
+    elif trend15 == "BEARISH":
 
         direction = "SHORT"
 
-    # ========================================================
-    # 15M STRUCTURE
-    # ========================================================
+    else:
+
+        return {
+            "symbol": symbol,
+            "direction": "WAIT",
+            "strategy": "SCALPING",
+            "score": 0,
+            "confidence": 0,
+            "reason":
+                "15M_SIDEWAYS",
+        }
+
+    # 15M structure ters ise işlem yok.
+    if (
+        direction15 != "UNKNOWN"
+        and direction15 != direction
+    ):
+
+        return {
+            "symbol": symbol,
+            "direction": "WAIT",
+            "strategy": "SCALPING",
+            "score": 0,
+            "confidence": 0,
+            "reason":
+                "15M_STRUCTURE_CONFLICT",
+        }
 
     score = 0
     reasons = []
 
-    structure_score15, structure_reasons15 = (
-        _structure_score(
-            struct15,
-            direction
-        )
+    score += 2
+
+    reasons.append(
+        f"15M direction = {direction}"
     )
 
-    score += structure_score15
+    # --------------------------------------------------------
+    # 15M BOS / CHOCH
+    # --------------------------------------------------------
 
-    reasons.extend(
-        [
-            f"15M {x}"
-            for x in structure_reasons15
-        ]
-    )
+    if structure15.get("bos"):
 
-    # ========================================================
-    # 15M MOMENTUM
-    # ========================================================
+        score += 2
 
-    momentum15 = _momentum(
-        ind15,
-        direction
-    )
-
-    score += momentum15
-
-    if momentum15:
         reasons.append(
-            "15M momentum confirmation"
+            "15M BOS"
         )
 
-    # ========================================================
-    # 5M SETUP
-    # ========================================================
+    if structure15.get("choch"):
 
-    structure_score5, structure_reasons5 = (
-        _structure_score(
-            struct5,
-            direction
-        )
-    )
+        score += 2
 
-    score += structure_score5
-
-    reasons.extend(
-        [
-            f"5M {x}"
-            for x in structure_reasons5
-        ]
-    )
-
-    momentum5 = _momentum(
-        ind5,
-        direction
-    )
-
-    score += momentum5
-
-    if momentum5:
         reasons.append(
-            "5M momentum confirmation"
+            "15M CHoCH"
         )
 
     # ========================================================
-    # 5M DIRECTION CHECK
+    # 5M — SETUP
     # ========================================================
 
-    trend5 = _trend(
-        ind5
+    trend5 = _trend(df5)
+
+    structure5 = _structure(df5)
+
+    direction5 = _structure_direction(
+        structure5
     )
 
     if direction == "LONG":
 
-        if trend5 == "BULLISH":
+        if trend5 != "BULLISH":
 
-            score += 2
-
-            reasons.append(
-                "5M trend aligned"
-            )
-
-        elif trend5 == "BEARISH":
-
-            return _wait(
-                symbol,
-                score,
-                reasons + [
-                    "5M trend 15M yönüne ters"
-                ]
-            )
+            return {
+                "symbol": symbol,
+                "direction": "WAIT",
+                "strategy": "SCALPING",
+                "score": score,
+                "confidence": 0,
+                "reason":
+                    "5M_NOT_ALIGNED",
+            }
 
     else:
 
-        if trend5 == "BEARISH":
+        if trend5 != "BEARISH":
 
-            score += 2
+            return {
+                "symbol": symbol,
+                "direction": "WAIT",
+                "strategy": "SCALPING",
+                "score": score,
+                "confidence": 0,
+                "reason":
+                    "5M_NOT_ALIGNED",
+            }
 
-            reasons.append(
-                "5M trend aligned"
-            )
+    score += 2
 
-        elif trend5 == "BULLISH":
-
-            return _wait(
-                symbol,
-                score,
-                reasons + [
-                    "5M trend 15M yönüne ters"
-                ]
-            )
-
-    # ========================================================
-    # 1M ENTRY TRIGGER
-    # ========================================================
-
-    trigger_score, trigger_reasons = (
-        _entry_trigger(
-            struct1,
-            ind1,
-            direction
-        )
-    )
-
-    score += trigger_score
-
-    reasons.extend(
-        [
-            f"1M {x}"
-            for x in trigger_reasons
-        ]
-    )
-
-    # --------------------------------------------------------
-    # HARD ENTRY REQUIREMENT
-    # --------------------------------------------------------
-
-    if trigger_score < 3:
-
-        return _wait(
-            symbol,
-            score,
-            reasons + [
-                "1M giriş tetikleyicisi yetersiz"
-            ]
-        )
-
-    # ========================================================
-    # FINAL SCORE
-    # ========================================================
-
-    if score < MIN_SCORE:
-
-        return _wait(
-            symbol,
-            score,
-            reasons
-        )
-
-    # ========================================================
-    # TRADE
-    # ========================================================
-
-    trade = _trade_parameters(
-
-        symbol,
-
-        df1,
-
-        ind1,
-
-        struct1,
-
-        direction,
-
-    )
-
-    if trade is None:
-
-        return _wait(
-            symbol,
-            score,
-            reasons + [
-                "Geçerli SL/TP oluşturulamadı"
-            ]
-        )
-
-    # ========================================================
-    # CONFIDENCE
-    # ========================================================
-
-    confidence = min(
-        95,
-        45 + score * 3
+    reasons.append(
+        "5M trend aligned"
     )
 
     if (
-        trend15
-        and trend5
-        and (
-            (
-                direction == "LONG"
-                and trend15 == "BULLISH"
-                and trend5 == "BULLISH"
-            )
-            or
-            (
-                direction == "SHORT"
-                and trend15 == "BEARISH"
-                and trend5 == "BEARISH"
-            )
-        )
+        direction5 != "UNKNOWN"
+        and direction5 == direction
     ):
 
-        confidence += 5
+        score += 2
 
-    confidence = min(
-        confidence,
-        99
-    )
+        reasons.append(
+            "5M structure aligned"
+        )
+
+    # --------------------------------------------------------
+    # 5M STRUCTURE EVENT
+    # --------------------------------------------------------
+
+    if structure5.get("bos"):
+
+        score += 2
+
+        reasons.append(
+            "5M BOS setup"
+        )
+
+    if structure5.get("choch"):
+
+        score += 2
+
+        reasons.append(
+            "5M CHoCH setup"
+        )
 
     # ========================================================
-    # RESULT
-    # ========================================================
-
-    trade.update({
-
-        "score":
-            score,
-
-        "confidence":
-            confidence,
-
-        "timeframe":
-            "15M > 5M > 1M",
-
-        "status":
-            "PAPER_ONLY",
-
-        "reasons":
-            reasons,
-
-    })
-
-    return trade
+    # 1M
