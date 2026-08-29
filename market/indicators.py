@@ -1,94 +1,149 @@
 # ============================================================
-# CRYPTO RESEARCH AGENT
-# TECHNICAL INDICATORS
+# MARKET INDICATORS
 # ============================================================
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 
 
-# ------------------------------------------------------------
-# EMA
-# ------------------------------------------------------------
+# ============================================================
+# HELPERS
+# ============================================================
 
-def ema(series, period):
-    return series.ewm(
-        span=period,
-        adjust=False
-    ).mean()
+def _ensure_ohlcv(df):
 
+    if df is None:
+        return pd.DataFrame()
 
-def add_ema(df, fast=20, slow=50):
+    if not isinstance(df, pd.DataFrame):
+        df = pd.DataFrame(df)
+
+    required = [
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+    ]
+
+    for column in required:
+
+        if column not in df.columns:
+            raise ValueError(
+                f"Missing OHLCV column: {column}"
+            )
+
+        df[column] = pd.to_numeric(
+            df[column],
+            errors="coerce",
+        )
+
     df = df.copy()
 
-    df["ema20"] = ema(
-        df["close"],
-        fast
-    )
-
-    df["ema50"] = ema(
-        df["close"],
-        slow
+    df = df.dropna(
+        subset=required
     )
 
     return df
 
 
-# ------------------------------------------------------------
-# RSI
-# ------------------------------------------------------------
+# ============================================================
+# EMA
+# ============================================================
 
-def rsi(series, period=14):
+def ema(
+    series,
+    period,
+):
+
+    return series.ewm(
+        span=period,
+        adjust=False,
+        min_periods=period,
+    ).mean()
+
+
+# ============================================================
+# SMA
+# ============================================================
+
+def sma(
+    series,
+    period,
+):
+
+    return series.rolling(
+        period
+    ).mean()
+
+
+# ============================================================
+# RSI
+# ============================================================
+
+def rsi(
+    series,
+    period=14,
+):
+
     delta = series.diff()
 
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
+    gain = delta.clip(
+        lower=0
+    )
+
+    loss = -delta.clip(
+        upper=0
+    )
 
     avg_gain = gain.ewm(
         alpha=1 / period,
         adjust=False,
-        min_periods=period
+        min_periods=period,
     ).mean()
 
     avg_loss = loss.ewm(
         alpha=1 / period,
         adjust=False,
-        min_periods=period
+        min_periods=period,
     ).mean()
 
-    rs = avg_gain / avg_loss.replace(
-        0,
-        np.nan
+    rs = (
+        avg_gain
+        /
+        avg_loss.replace(
+            0,
+            np.nan
+        )
     )
 
     result = 100 - (
         100 / (1 + rs)
     )
 
-    return result.fillna(50)
-
-
-def add_rsi(df, period=14):
-    df = df.copy()
-
-    df["rsi14"] = rsi(
-        df["close"],
-        period
+    # Sürekli yükselen piyasada RSI = 100
+    result = result.fillna(
+        np.where(
+            avg_gain > 0,
+            100,
+            0
+        )
     )
 
-    return df
+    return result
 
 
-# ------------------------------------------------------------
+# ============================================================
 # MACD
-# ------------------------------------------------------------
+# ============================================================
 
 def macd(
     series,
     fast=12,
     slow=26,
-    signal=9
+    signal=9,
 ):
+
     fast_ema = ema(
         series,
         fast
@@ -100,7 +155,8 @@ def macd(
     )
 
     macd_line = (
-        fast_ema -
+        fast_ema
+        -
         slow_ema
     )
 
@@ -110,52 +166,46 @@ def macd(
     )
 
     histogram = (
-        macd_line -
+        macd_line
+        -
         signal_line
     )
 
     return (
         macd_line,
         signal_line,
-        histogram
+        histogram,
     )
 
 
-def add_macd(df):
-    df = df.copy()
-
-    (
-        df["macd"],
-        df["macd_signal"],
-        df["macd_hist"]
-    ) = macd(
-        df["close"]
-    )
-
-    return df
-
-
-# ------------------------------------------------------------
+# ============================================================
 # ATR
-# ------------------------------------------------------------
+# ============================================================
 
-def atr(df, period=14):
+def atr(
+    df,
+    period=14,
+):
 
-    high = df["high"]
-    low = df["low"]
-    close = df["close"]
+    previous_close = (
+        df["close"].shift(1)
+    )
 
-    previous_close = close.shift(1)
-
-    tr1 = high - low
+    tr1 = (
+        df["high"]
+        -
+        df["low"]
+    )
 
     tr2 = (
-        high -
+        df["high"]
+        -
         previous_close
     ).abs()
 
     tr3 = (
-        low -
+        df["low"]
+        -
         previous_close
     ).abs()
 
@@ -163,128 +213,201 @@ def atr(df, period=14):
         [
             tr1,
             tr2,
-            tr3
+            tr3,
         ],
+        axis=1,
+    ).max(
         axis=1
-    ).max(axis=1)
+    )
 
     return true_range.ewm(
         alpha=1 / period,
         adjust=False,
-        min_periods=period
+        min_periods=period,
     ).mean()
 
 
-def add_atr(df, period=14):
-    df = df.copy()
+# ============================================================
+# VOLUME RATIO
+# ============================================================
 
-    df["atr14"] = atr(
-        df,
+def volume_ratio(
+    volume,
+    period=20,
+):
+
+    average = volume.rolling(
         period
-    )
+    ).mean()
 
-    return df
-
-
-# ------------------------------------------------------------
-# OBV
-# ------------------------------------------------------------
-
-def obv(df):
-
-    direction = np.sign(
-        df["close"].diff()
-    )
-
-    volume = df["volume"]
-
-    values = (
-        direction *
+    return (
         volume
-    ).fillna(0)
-
-    return values.cumsum()
-
-
-def add_obv(df):
-    df = df.copy()
-
-    df["obv"] = obv(df)
-
-    return df
-
-
-# ------------------------------------------------------------
-# VOLUME ANALYSIS
-# ------------------------------------------------------------
-
-def add_volume_metrics(
-    df,
-    period=20
-):
-    df = df.copy()
-
-    df["volume_ma20"] = (
-        df["volume"]
-        .rolling(period)
-        .mean()
-    )
-
-    df["volume_ratio"] = (
-        df["volume"] /
-        df["volume_ma20"]
-    )
-
-    return df
-
-
-# ------------------------------------------------------------
-# PRICE POSITION
-# ------------------------------------------------------------
-
-def add_price_position(
-    df,
-    lookback=20
-):
-    df = df.copy()
-
-    df["rolling_high"] = (
-        df["high"]
-        .rolling(lookback)
-        .max()
-    )
-
-    df["rolling_low"] = (
-        df["low"]
-        .rolling(lookback)
-        .min()
-    )
-
-    price_range = (
-        df["rolling_high"] -
-        df["rolling_low"]
-    )
-
-    df["range_position"] = (
-        (
-            df["close"] -
-            df["rolling_low"]
-        ) /
-        price_range.replace(
+        /
+        average.replace(
             0,
             np.nan
         )
     )
 
-    return df
+
+# ============================================================
+# VWAP
+# ============================================================
+
+def vwap(
+    df,
+):
+
+    typical_price = (
+        df["high"]
+        +
+        df["low"]
+        +
+        df["close"]
+    ) / 3
+
+    cumulative_volume = (
+        df["volume"]
+        .cumsum()
+    )
+
+    cumulative_pv = (
+        typical_price
+        *
+        df["volume"]
+    ).cumsum()
+
+    return (
+        cumulative_pv
+        /
+        cumulative_volume.replace(
+            0,
+            np.nan
+        )
+    )
 
 
-# ------------------------------------------------------------
-# MOMENTUM
-# ------------------------------------------------------------
+# ============================================================
+# COMPLETE INDICATORS
+# ============================================================
 
-def add_momentum(df):
-    df = df.copy()
+def calculate_indicators(
+    df,
+):
+
+    df = _ensure_ohlcv(
+        df
+    )
+
+    if df.empty:
+        return df
+
+    # --------------------------------------------------------
+    # EMA
+    # --------------------------------------------------------
+
+    df["ema20"] = ema(
+        df["close"],
+        20
+    )
+
+    df["ema50"] = ema(
+        df["close"],
+        50
+    )
+
+    df["ema100"] = ema(
+        df["close"],
+        100
+    )
+
+    df["ema200"] = ema(
+        df["close"],
+        200
+    )
+
+    # --------------------------------------------------------
+    # SMA
+    # --------------------------------------------------------
+
+    df["sma20"] = sma(
+        df["close"],
+        20
+    )
+
+    df["sma50"] = sma(
+        df["close"],
+        50
+    )
+
+    # --------------------------------------------------------
+    # RSI
+    # --------------------------------------------------------
+
+    df["rsi"] = rsi(
+        df["close"],
+        14
+    )
+
+    # --------------------------------------------------------
+    # MACD
+    # --------------------------------------------------------
+
+    (
+        df["macd"],
+        df["macd_signal"],
+        df["macd_hist"],
+    ) = macd(
+        df["close"]
+    )
+
+    # --------------------------------------------------------
+    # ATR
+    # --------------------------------------------------------
+
+    df["atr"] = atr(
+        df,
+        14
+    )
+
+    # --------------------------------------------------------
+    # ATR %
+    # --------------------------------------------------------
+
+    df["atr_percent"] = (
+        df["atr"]
+        /
+        df["close"]
+    ) * 100
+
+    # --------------------------------------------------------
+    # VOLUME
+    # --------------------------------------------------------
+
+    df["volume_ma20"] = (
+        df["volume"]
+        .rolling(20)
+        .mean()
+    )
+
+    df["volume_ratio"] = (
+        volume_ratio(
+            df["volume"],
+            20
+        )
+    )
+
+    # --------------------------------------------------------
+    # VWAP
+    # --------------------------------------------------------
+
+    df["vwap"] = vwap(
+        df
+    )
+
+    # --------------------------------------------------------
+    # MOMENTUM
+    # --------------------------------------------------------
 
     df["roc"] = (
         df["close"]
@@ -292,199 +415,222 @@ def add_momentum(df):
         * 100
     )
 
+    # --------------------------------------------------------
+    # CANDLE RANGE
+    # --------------------------------------------------------
+
+    df["candle_range"] = (
+        df["high"]
+        -
+        df["low"]
+    )
+
+    df["body"] = (
+        df["close"]
+        -
+        df["open"]
+    ).abs()
+
+    df["body_ratio"] = (
+        df["body"]
+        /
+        df["candle_range"].replace(
+            0,
+            np.nan
+        )
+    )
+
+    # --------------------------------------------------------
+    # TREND FLAGS
+    # --------------------------------------------------------
+
+    df["bullish_trend"] = (
+        (df["close"] > df["ema20"])
+        &
+        (df["ema20"] > df["ema50"])
+    )
+
+    df["bearish_trend"] = (
+        (df["close"] < df["ema20"])
+        &
+        (df["ema20"] < df["ema50"])
+    )
+
+    # --------------------------------------------------------
+    # MACD FLAGS
+    # --------------------------------------------------------
+
+    df["macd_bullish"] = (
+        df["macd_hist"] > 0
+    )
+
+    df["macd_bearish"] = (
+        df["macd_hist"] < 0
+    )
+
     return df
 
 
-# ------------------------------------------------------------
-# ALL INDICATORS
-# ------------------------------------------------------------
+# ============================================================
+# LATEST VALUES
+# ============================================================
 
-def calculate_indicators(df):
+def latest_indicators(
+    df,
+):
 
-    if df is None:
-        return None
-
-    if df.empty:
-        return df
-
-    required = [
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume"
-    ]
-
-    for column in required:
-        if column not in df.columns:
-            raise ValueError(
-                f"Eksik kolon: {column}"
-            )
-
-    result = df.copy()
-
-    result = add_ema(
-        result
-    )
-
-    result = add_rsi(
-        result
-    )
-
-    result = add_macd(
-        result
-    )
-
-    result = add_atr(
-        result
-    )
-
-    result = add_obv(
-        result
-    )
-
-    result = add_volume_metrics(
-        result
-    )
-
-    result = add_price_position(
-        result
-    )
-
-    result = add_momentum(
-        result
-    )
-
-    return result
-
-
-# ------------------------------------------------------------
-# LATEST INDICATOR SNAPSHOT
-# ------------------------------------------------------------
-
-def latest_indicators(df):
-
-    if df is None or df.empty:
-        return {}
-
-    df = calculate_indicators(
+    data = calculate_indicators(
         df
     )
 
-    row = df.iloc[-1]
+    if data.empty:
+        return {}
+
+    row = data.iloc[-1]
 
     return {
-        "price": float(
-            row["close"]
-        ),
 
-        "ema20": float(
-            row["ema20"]
-        ),
+        "price":
+            float(row["close"]),
 
-        "ema50": float(
-            row["ema50"]
-        ),
+        "open":
+            float(row["open"]),
 
-        "rsi": float(
-            row["rsi14"]
-        ),
+        "high":
+            float(row["high"]),
 
-        "macd": float(
-            row["macd"]
-        ),
+        "low":
+            float(row["low"]),
 
-        "macd_signal": float(
-            row["macd_signal"]
-        ),
+        "volume":
+            float(row["volume"]),
 
-        "macd_hist": float(
-            row["macd_hist"]
-        ),
+        "ema20":
+            _safe_value(
+                row["ema20"]
+            ),
 
-        "atr": float(
-            row["atr14"]
-        ),
+        "ema50":
+            _safe_value(
+                row["ema50"]
+            ),
 
-        "obv": float(
-            row["obv"]
-        ),
+        "ema100":
+            _safe_value(
+                row["ema100"]
+            ),
 
-        "volume_ratio": float(
-            row["volume_ratio"]
-        ),
+        "ema200":
+            _safe_value(
+                row["ema200"]
+            ),
 
-        "roc": float(
-            row["roc"]
-        ),
+        "sma20":
+            _safe_value(
+                row["sma20"]
+            ),
 
-        "range_position": float(
-            row["range_position"]
-        )
+        "sma50":
+            _safe_value(
+                row["sma50"]
+            ),
+
+        "rsi":
+            _safe_value(
+                row["rsi"]
+            ),
+
+        "macd":
+            _safe_value(
+                row["macd"]
+            ),
+
+        "macd_signal":
+            _safe_value(
+                row["macd_signal"]
+            ),
+
+        "macd_hist":
+            _safe_value(
+                row["macd_hist"]
+            ),
+
+        "atr":
+            _safe_value(
+                row["atr"]
+            ),
+
+        "atr_percent":
+            _safe_value(
+                row["atr_percent"]
+            ),
+
+        "volume_ma20":
+            _safe_value(
+                row["volume_ma20"]
+            ),
+
+        "volume_ratio":
+            _safe_value(
+                row["volume_ratio"]
+            ),
+
+        "vwap":
+            _safe_value(
+                row["vwap"]
+            ),
+
+        "roc":
+            _safe_value(
+                row["roc"]
+            ),
+
+        "body_ratio":
+            _safe_value(
+                row["body_ratio"]
+            ),
+
+        "bullish_trend":
+            bool(
+                row["bullish_trend"]
+            ),
+
+        "bearish_trend":
+            bool(
+                row["bearish_trend"]
+            ),
+
+        "macd_bullish":
+            bool(
+                row["macd_bullish"]
+            ),
+
+        "macd_bearish":
+            bool(
+                row["macd_bearish"]
+            ),
     }
 
 
-# ------------------------------------------------------------
-# TREND CLASSIFICATION
-# ------------------------------------------------------------
+def _safe_value(
+    value
+):
 
-def classify_trend(snapshot):
+    try:
 
-    if not snapshot:
-        return "UNKNOWN"
+        value = float(value)
 
-    price = snapshot["price"]
-    ema20 = snapshot["ema20"]
-    ema50 = snapshot["ema50"]
+        if np.isnan(value):
+            return None
 
-    if (
-        price > ema20 >
-        ema50
+        if np.isinf(value):
+            return None
+
+        return value
+
+    except (
+        TypeError,
+        ValueError,
     ):
-        return "UP"
 
-    if (
-        price < ema20 <
-        ema50
-    ):
-        return "DOWN"
-
-    return "SIDEWAYS"
-
-
-# ------------------------------------------------------------
-# MOMENTUM CLASSIFICATION
-# ------------------------------------------------------------
-
-def classify_momentum(snapshot):
-
-    if not snapshot:
-        return "UNKNOWN"
-
-    macd_hist = snapshot[
-        "macd_hist"
-    ]
-
-    rsi_value = snapshot[
-        "rsi"
-    ]
-
-    if (
-        macd_hist > 0 and
-        rsi_value >= 50
-    ):
-        return "STRONG"
-
-    if (
-        macd_hist > 0 or
-        rsi_value >= 50
-    ):
-        return "POSITIVE"
-
-    if (
-        macd_hist < 0 and
-        rsi_value < 50
-    ):
-        return "WEAK"
-
-    return "NEGATIVE"
+        return None
