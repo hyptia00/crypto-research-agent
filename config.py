@@ -1,47 +1,143 @@
 # ============================================================
-# CRYPTO RESEARCH AGENT
-# CONFIGURATION
+# TRADING AGENT CONFIGURATION
 # ============================================================
 
-# -----------------------------
+# ------------------------------------------------------------
 # CORE COINS
-# -----------------------------
+# ------------------------------------------------------------
 
 CORE_COINS = [
     "BTCUSDT",
     "ETHUSDT",
     "SOLUSDT",
-    "BNBUSDT",
-    "XRPUSDT",
-    "DOTUSDT",
-    "NEARUSDT",
-    "JUPUSDT",
-    "MOVRUSDT",
-    "TNSRUSDT",
 ]
 
 
-# -----------------------------
-# DISCOVERY
-# -----------------------------
+# ------------------------------------------------------------
+# COIN DISCOVERY
+# ------------------------------------------------------------
 
-# Ana coinler dışında piyasayı taramak için
 DISCOVERY_ENABLED = True
 
-# USDT pariteleri
-DISCOVERY_QUOTE = "USDT"
+DISCOVERY_LIMIT = 10
 
-# Çok düşük likiditeli coinleri elemek için
-MIN_24H_VOLUME_USDT = 5_000_000
+MIN_DISCOVERY_VOLUME = 10_000_000
 
 
-# -----------------------------
+# ------------------------------------------------------------
 # TIMEFRAMES
-# -----------------------------
+# ------------------------------------------------------------
 
-FUTURES_TIMEFRAME = "1h"
+TIMEFRAMES = [
+    "4h",
+    "1h",
+    "15m",
+    "5m",
+    "1m",
+]
 
-SPOT_TIMEFRAME = "4h"
+
+# ------------------------------------------------------------
+# DATA
+# ------------------------------------------------------------
+
+DATA_LIMIT = 200
+
+
+# ------------------------------------------------------------
+# STRATEGIES
+# ------------------------------------------------------------
+
+FUTURES_ENABLED = True
+
+SPOT_ENABLED = True
+
+SCALPING_ENABLED = True
+
+
+# ------------------------------------------------------------
+# FUTURES
+# ------------------------------------------------------------
+
+FUTURES_MIN_SCORE = 5
+
+FUTURES_MIN_CONFIDENCE = 60
+
+FUTURES_MIN_RR = 1.8
+
+
+# ------------------------------------------------------------
+# SPOT
+# ------------------------------------------------------------
+
+SPOT_MIN_SCORE = 4
+
+SPOT_MIN_CONFIDENCE = 60
+
+SPOT_MIN_RR = 1.8
+
+
+# ------------------------------------------------------------
+# SCALPING
+# ------------------------------------------------------------
+
+SCALPING_MIN_SCORE = 10
+
+SCALPING_MIN_CONFIDENCE = 65
+
+SCALPING_MIN_RR = 1.5
+
+
+# ------------------------------------------------------------
+# RISK MANAGEMENT
+# ------------------------------------------------------------
+
+STARTING_BALANCE = 1000.0
+
+RISK_PER_TRADE = 0.01
+
+MAX_OPEN_POSITIONS = 5
+
+MAX_DAILY_LOSS = 0.03
+
+
+# ------------------------------------------------------------
+# PAPER TRADING
+# ------------------------------------------------------------
+
+PAPER_TRADING = True
+
+
+# ------------------------------------------------------------
+# EXECUTION
+# ------------------------------------------------------------
+
+LIVE_TRADING = False
+
+AUTO_EXECUTION = False
+
+
+# ------------------------------------------------------------
+# SIGNAL FILTER
+# ------------------------------------------------------------
+
+MIN_AGGREGATED_SCORE = 6
+
+MIN_AGGREGATED_CONFIDENCE = 60
+
+
+# ------------------------------------------------------------
+# BTC REGIME
+# ------------------------------------------------------------
+
+BTC_REGIME_ENABLED = True
+
+BTC_REGIME_TIMEFRAME = "1h"
+
+
+# ------------------------------------------------------------
+# SCALPING PIPELINE
+# ------------------------------------------------------------
 
 SCALPING_TIMEFRAMES = [
     "15m",
@@ -50,120 +146,19 @@ SCALPING_TIMEFRAMES = [
 ]
 
 
-# -----------------------------
-# INDICATORS
-# -----------------------------
+# ------------------------------------------------------------
+# LOGGING
+# ------------------------------------------------------------
 
-EMA_FAST = 20
-EMA_SLOW = 50
+LOG_LEVEL = "INFO"
 
-RSI_PERIOD = 14
-
-MACD_FAST = 12
-MACD_SLOW = 26
-MACD_SIGNAL = 9
-
-ATR_PERIOD = 14
-
-OBV_ENABLED = True
+PRINT_SIGNALS = True
 
 
-# -----------------------------
-# MARKET STRUCTURE
-# -----------------------------
-
-STRUCTURE_LOOKBACK = 50
-
-BOS_ENABLED = True
-
-MSB_ENABLED = True
-
-LIQUIDITY_ENABLED = True
-
-
-# -----------------------------
-# SIGNAL THRESHOLDS
-# -----------------------------
-
-# Futures
-FUTURES_MIN_SCORE = 6
-
-# Spot
-SPOT_MIN_SCORE = 6
-
-# Scalping
-SCALPING_MIN_SCORE = 7
-
-# Discovery
-DISCOVERY_MIN_SCORE = 7
-
-
-# -----------------------------
-# RISK / REWARD
-# -----------------------------
-
-MIN_RR = 2.0
-
-DEFAULT_RR = 2.5
-
-MAX_RISK_PERCENT = 1.0
-
-
-# -----------------------------
-# BTC REGIME FILTER
-# -----------------------------
-
-BTC_REGIME_ENABLED = True
-
-BTC_REGIME_TIMEFRAME = "4h"
-
-
-# -----------------------------
-# SCALPING CONFIRMATION
-# -----------------------------
-
-# Scalping sıralaması:
-#
-# 15m = yön / yapı
-# 5m  = setup teyidi
-# 1m  = giriş tetikleyicisi
-
-SCALP_REQUIRE_15M = True
-SCALP_REQUIRE_5M = True
-SCALP_REQUIRE_1M = True
-
-
-# -----------------------------
-# PAPER TRADING
-# -----------------------------
-
-PAPER_TRADING = True
-
-# Şimdilik gerçek emir gönderme
-LIVE_TRADING = False
-
-
-# -----------------------------
+# ------------------------------------------------------------
 # API
-# -----------------------------
+# ------------------------------------------------------------
 
-# GitHub Secrets üzerinden alınacak
-BINANCE_API_KEY = ""
-BINANCE_API_SECRET = ""
-
-
-# -----------------------------
-# OUTPUT
-# -----------------------------
-
-MAX_SIGNALS = 10
-
-SHOW_CORE_SIGNALS = True
-
-SHOW_DISCOVERY_SIGNALS = True
-
-SHOW_SPOT_SIGNALS = True
-
-SHOW_FUTURES_SIGNALS = True
-
-SHOW_SCALPING_SIGNALS = True
+BINANCE_BASE_URL = (
+    "https://api.binance.com"
+)
