@@ -4,9 +4,17 @@ on:
   workflow_dispatch:
 
 jobs:
-  test:
+  research:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Test agent
-        run: echo "Crypto Research Agent is working!"
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Run Crypto Research Agent
+        run: python agent.py
