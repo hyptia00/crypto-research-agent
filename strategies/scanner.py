@@ -1,61 +1,89 @@
 # ============================================================
-# CRYPTO RESEARCH AGENT
 # MARKET OPPORTUNITY SCANNER
 # ============================================================
 
-from config import (
-    CORE_COINS,
-    MIN_24H_VOLUME_USDT,
-)
-
-from market.data_engine import (
-    discover_usdt_markets,
-)
+from typing import Any, Dict, List, Optional
 
 
-# ============================================================
-# SETTINGS
-# ============================================================
-
-DEFAULT_LIMIT = 30
-
-MIN_ABSOLUTE_CHANGE = 1.0
-
-MAX_ABSOLUTE_CHANGE = 30.0
+DEFAULT_MIN_VOLUME = 10_000_000
+DEFAULT_MAX_RESULTS = 15
 
 
-# ============================================================
-# HELPERS
-# ============================================================
-
-def _safe_float(value):
+def _float(value, default=0.0):
 
     try:
         return float(value)
-
-    except (
-        TypeError,
-        ValueError,
-    ):
-        return 0.0
+    except (TypeError, ValueError):
+        return default
 
 
-# ============================================================
-# MOMENTUM SCORE
-# ============================================================
+def _symbol(ticker):
+
+    return str(
+        ticker.get(
+            "symbol",
+            ""
+        )
+    ).upper()
+
+
+def _volume(ticker):
+
+    return _float(
+        ticker.get(
+            "quoteVolume",
+            ticker.get(
+                "quote_volume",
+                ticker.get(
+                    "volume",
+                    0
+                )
+            )
+        )
+    )
+
+
+def _change(ticker):
+
+    return _float(
+        ticker.get(
+            "priceChangePercent",
+            ticker.get(
+                "price_change_percent",
+                0
+            )
+        )
+    )
+
+
+def _price(ticker):
+
+    return _float(
+        ticker.get(
+            "lastPrice",
+            ticker.get(
+                "price",
+                0
+            )
+        )
+    )
+
 
 def _momentum_score(
     change
 ):
 
     change = abs(
-        _safe_float(change)
+        _float(change)
     )
 
     if change >= 10:
+        return 4
+
+    if change >= 7:
         return 3
 
-    if change >= 5:
+    if change >= 4:
         return 2
 
     if change >= 2:
@@ -64,17 +92,12 @@ def _momentum_score(
     return 0
 
 
-# ============================================================
-# VOLUME SCORE
-# ============================================================
-
 def _volume_score(
     volume
 ):
 
-    volume = _safe_float(
-        volume
-    )
+    if volume >= 100_000_000:
+        return 4
 
     if volume >= 50_000_000:
         return 3
@@ -88,88 +111,79 @@ def _volume_score(
     return 0
 
 
-# ============================================================
-# DISCOVERY CANDIDATE
-# ============================================================
-
 def _build_candidate(
-    ticker
+    ticker,
+    core_coins,
+    min_volume
 ):
 
-    symbol = ticker.get(
-        "symbol"
-    )
-
-    change = _safe_float(
-        ticker.get(
-            "price_change_percent"
-        )
-    )
-
-    volume = _safe_float(
-        ticker.get(
-            "quote_volume"
-        )
-    )
-
-    price = _safe_float(
-        ticker.get(
-            "price"
-        )
-    )
+    symbol = _symbol(ticker)
 
     if not symbol:
         return None
 
-    if symbol in CORE_COINS:
-        return None
+    # --------------------------------------------------------
+    # USDT ONLY
+    # --------------------------------------------------------
 
     if not symbol.endswith(
         "USDT"
     ):
         return None
 
-    if volume < MIN_24H_VOLUME_USDT:
+    # --------------------------------------------------------
+    # CORE COINS EXCLUDED
+    # --------------------------------------------------------
+
+    if symbol in core_coins:
         return None
 
-    absolute_change = abs(
+    volume = _volume(
+        ticker
+    )
+
+    change = _change(
+        ticker
+    )
+
+    price = _price(
+        ticker
+    )
+
+    if volume < min_volume:
+        return None
+
+    if price <= 0:
+        return None
+
+    # Çok düşük hareket = ilgi yok
+    if abs(change) < 1.5:
+        return None
+
+    momentum = _momentum_score(
         change
     )
 
-    # Aşırı hareket etmiş coinleri
-    # ilk aşamada dışarıda bırak.
-    if (
-        absolute_change
-        < MIN_ABSOLUTE_CHANGE
-    ):
-        return None
-
-    if (
-        absolute_change
-        > MAX_ABSOLUTE_CHANGE
-    ):
-        return None
-
-    momentum_score = (
-        _momentum_score(
-            change
-        )
-    )
-
-    volume_score = (
-        _volume_score(
-            volume
-        )
+    volume_score = _volume_score(
+        volume
     )
 
     score = (
-        momentum_score
+        momentum
         +
         volume_score
     )
 
     if score < 2:
         return None
+
+    # --------------------------------------------------------
+    # EXTREME MOVE FLAG
+    # --------------------------------------------------------
+
+    extreme = (
+        abs(change) >= 15
+    )
 
     return {
 
@@ -185,65 +199,58 @@ def _build_candidate(
         "volume_24h":
             volume,
 
-        "discovery_score":
-            score,
-
         "momentum_score":
-            momentum_score,
+            momentum,
 
         "volume_score":
             volume_score,
 
+        "discovery_score":
+            score,
+
+        "extreme_move":
+            extreme,
+
+        "source":
+            "MARKET_SCANNER",
+
     }
 
 
-# ============================================================
-# DISCOVER
-# ============================================================
-
-def discover_candidates(
-    limit=DEFAULT_LIMIT
+def scan_market(
+    tickers: Optional[List[Dict[str, Any]]] = None,
+    core_coins: Optional[List[str]] = None,
+    min_volume: float = DEFAULT_MIN_VOLUME,
+    limit: int = DEFAULT_MAX_RESULTS,
 ):
 
     """
-    Piyasadaki ana coinler dışındaki
-    likit ve hareketli coinleri bulur.
+    Piyasadaki yeni fırsatları bulur.
+
+    Bu fonksiyon:
+        - işlem açmaz
+        - BUY/SELL üretmez
+        - sadece aday bulur
     """
 
-    print()
-    print(
-        "SCANNER: market discovery başlıyor..."
-    )
-
-    try:
-
-        markets = discover_usdt_markets(
-
-            min_volume_usdt=
-                MIN_24H_VOLUME_USDT,
-
-            limit=
-                limit * 3,
-
-        )
-
-    except Exception as exc:
-
-        print(
-            "SCANNER ERROR:",
-            exc
-        )
-
+    if not tickers:
         return []
+
+    core = {
+        str(x).upper()
+        for x in (
+            core_coins or []
+        )
+    }
 
     candidates = []
 
-    for ticker in markets:
+    for ticker in tickers:
 
-        candidate = (
-            _build_candidate(
-                ticker
-            )
+        candidate = _build_candidate(
+            ticker,
+            core,
+            min_volume,
         )
 
         if candidate is None:
@@ -254,7 +261,7 @@ def discover_candidates(
         )
 
     # --------------------------------------------------------
-    # SCORE
+    # RANK
     # --------------------------------------------------------
 
     candidates.sort(
@@ -266,147 +273,72 @@ def discover_candidates(
         ),
 
         reverse=True,
-
     )
 
-    candidates = candidates[
-        :limit
-    ]
-
-    print(
-        f"SCANNER: "
-        f"{len(candidates)} aday bulundu."
-    )
-
-    return candidates
+    return candidates[:limit]
 
 
-# ============================================================
-# PRE-FILTER
-# ============================================================
-
-def prefilter_candidates(
+def rank_candidates(
     candidates
 ):
 
     """
-    Strategy engine'e gönderilmeden önce
-    gereksiz adayları temizler.
+    Mevcut adayları tekrar sıralar.
     """
-
-    result = []
-
-    for candidate in candidates:
-
-        symbol = candidate.get(
-            "symbol"
-        )
-
-        if not symbol:
-            continue
-
-        if symbol in CORE_COINS:
-            continue
-
-        if candidate.get(
-            "volume_24h",
-            0
-        ) < MIN_24H_VOLUME_USDT:
-
-            continue
-
-        if candidate.get(
-            "discovery_score",
-            0
-        ) < 2:
-
-            continue
-
-        result.append(
-            candidate
-        )
-
-    return result
-
-
-# ============================================================
-# FINAL DISCOVERY
-# ============================================================
-
-def scan_market(
-    limit=DEFAULT_LIMIT
-):
-
-    """
-    Dışarıdan çağrılacak ana fonksiyon.
-
-    Sonuç:
-        Yeni coin adayları
-    """
-
-    candidates = (
-        discover_candidates(
-            limit=limit
-        )
-    )
-
-    candidates = (
-        prefilter_candidates(
-            candidates
-        )
-    )
-
-    return candidates
-
-
-# ============================================================
-# REPORT
-# ============================================================
-
-def print_scanner_report(
-    candidates
-):
-
-    print()
-    print("=" * 70)
-    print(
-        "NEW COIN DISCOVERY"
-    )
-    print("=" * 70)
 
     if not candidates:
+        return []
 
-        print(
-            "Yeni aday bulunamadı."
-        )
+    return sorted(
 
-        return
-
-    for index, candidate in enumerate(
         candidates,
-        1
-    ):
 
-        print(
-            f"{index:02d}. "
-            f"{candidate['symbol']} | "
-            f"24H: "
-            f"{candidate['change_24h']:+.2f}% | "
-            f"VOL: "
-            f"${candidate['volume_24h']:,.0f} | "
-            f"SCORE: "
-            f"{candidate['discovery_score']}"
-        )
+        key=lambda x: (
+            _float(
+                x.get(
+                    "discovery_score"
+                )
+            ),
 
+            _float(
+                x.get(
+                    "volume_24h"
+                )
+            ),
 
-# ============================================================
-# TEST
-# ============================================================
+            abs(
+                _float(
+                    x.get(
+                        "change_24h"
+                    )
+                )
+            ),
+        ),
 
-if __name__ == "__main__":
-
-    candidates = scan_market()
-
-    print_scanner_report(
-        candidates
+        reverse=True,
     )
+
+
+def remove_core_coins(
+    candidates,
+    core_coins
+):
+
+    core = {
+        str(x).upper()
+        for x in (
+            core_coins or []
+        )
+    }
+
+    return [
+        candidate
+        for candidate in candidates
+        if str(
+            candidate.get(
+                "symbol",
+                ""
+            )
+        ).upper()
+        not in core
+    ]
