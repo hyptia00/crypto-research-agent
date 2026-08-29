@@ -1,362 +1,336 @@
 # ============================================================
-# RISK FILTER ENGINE
+# RISK ENGINE
+# FINAL TRADE FILTER
 # ============================================================
 
-from typing import Any, Dict, Optional
-
-
-def _float(value, default=0.0):
+def _num(value, default=0.0):
     try:
         return float(value)
     except (TypeError, ValueError):
         return default
 
 
-def _direction(signal: Dict[str, Any]) -> str:
-    direction = str(
-        signal.get(
-            "direction",
-            signal.get("side", "")
-        )
-    ).upper()
+def _side(value):
+    value = str(value or "").upper()
 
-    if direction == "BUY":
+    if value in ("LONG", "BUY"):
         return "LONG"
 
-    if direction == "SELL":
+    if value in ("SHORT", "SELL"):
         return "SHORT"
 
-    return direction
+    return "WAIT"
 
 
-def calculate_risk_reward(
-    entry: float,
-    stop: float,
-    target: float,
-    direction: str,
-) -> float:
-
-    entry = _float(entry)
-    stop = _float(stop)
-    target = _float(target)
-
-    if entry <= 0 or stop <= 0 or target <= 0:
-        return 0.0
-
-    direction = direction.upper()
-
-    if direction == "LONG":
-
-        risk = entry - stop
-        reward = target - entry
-
-    elif direction == "SHORT":
-
-        risk = stop - entry
-        reward = entry - target
-
-    else:
-        return 0.0
-
-    if risk <= 0:
-        return 0.0
-
-    return reward / risk
-
+# ============================================================
+# SINGLE SIGNAL CHECK
+# ============================================================
 
 def validate_signal(
-    signal: Dict[str, Any],
-    btc_regime: Optional[str] = None,
-    min_confidence: float = 65.0,
-    min_rr: float = 1.8,
-) -> Dict[str, Any]:
-
+    signal,
+    btc_regime="UNKNOWN",
+    min_confidence=60,
+    min_rr=1.8,
+):
     if not isinstance(signal, dict):
+        return False, "INVALID_SIGNAL"
 
-        return {
-            "approved": False,
-            "reason": "INVALID_SIGNAL",
-        }
-
-    symbol = str(
-        signal.get("symbol", "")
-    ).upper()
-
-    direction = _direction(signal)
-
-    entry = _float(
-        signal.get(
-            "entry",
-            signal.get("price")
-        )
+    direction = _side(
+        signal.get("direction")
     )
 
-    stop = _float(
-        signal.get("stop")
-    )
+    if direction == "WAIT":
+        return False, "NO_DIRECTION"
 
-    tp1 = _float(
-        signal.get("tp1")
-    )
-
-    tp2 = _float(
-        signal.get("tp2")
-    )
-
-    confidence = _float(
-        signal.get("confidence")
-    )
-
-    score = _float(
+    score = _num(
         signal.get("score")
     )
 
-    # --------------------------------------------------------
-    # BASIC VALIDATION
-    # --------------------------------------------------------
-
-    if not symbol:
-        return {
-            "approved": False,
-            "reason": "MISSING_SYMBOL",
-        }
-
-    if direction not in ("LONG", "SHORT"):
-        return {
-            "approved": False,
-            "reason": "INVALID_DIRECTION",
-            "symbol": symbol,
-        }
-
-    if entry <= 0:
-        return {
-            "approved": False,
-            "reason": "INVALID_ENTRY",
-            "symbol": symbol,
-        }
-
-    if stop <= 0:
-        return {
-            "approved": False,
-            "reason": "MISSING_STOP",
-            "symbol": symbol,
-        }
-
-    if tp1 <= 0 and tp2 <= 0:
-        return {
-            "approved": False,
-            "reason": "MISSING_TARGET",
-            "symbol": symbol,
-        }
-
-    # --------------------------------------------------------
-    # STOP LOCATION
-    # --------------------------------------------------------
-
-    if direction == "LONG" and stop >= entry:
-
-        return {
-            "approved": False,
-            "reason": "LONG_STOP_INVALID",
-            "symbol": symbol,
-        }
-
-    if direction == "SHORT" and stop <= entry:
-
-        return {
-            "approved": False,
-            "reason": "SHORT_STOP_INVALID",
-            "symbol": symbol,
-        }
-
-    # --------------------------------------------------------
-    # TARGET
-    # --------------------------------------------------------
-
-    target = tp2 if tp2 > 0 else tp1
-
-    if direction == "LONG" and target <= entry:
-
-        return {
-            "approved": False,
-            "reason": "LONG_TARGET_INVALID",
-            "symbol": symbol,
-        }
-
-    if direction == "SHORT" and target >= entry:
-
-        return {
-            "approved": False,
-            "reason": "SHORT_TARGET_INVALID",
-            "symbol": symbol,
-        }
-
-    # --------------------------------------------------------
-    # RISK / REWARD
-    # --------------------------------------------------------
-
-    rr = calculate_risk_reward(
-        entry,
-        stop,
-        target,
-        direction,
+    confidence = _num(
+        signal.get("confidence")
     )
 
-    if rr < min_rr:
-
-        return {
-            "approved": False,
-            "reason": "RR_TOO_LOW",
-            "symbol": symbol,
-            "rr": round(rr, 2),
-            "required_rr": min_rr,
-        }
-
-    # --------------------------------------------------------
-    # CONFIDENCE
-    # --------------------------------------------------------
+    rr = _num(
+        signal.get("rr")
+    )
 
     if confidence < min_confidence:
+        return False, "CONFIDENCE_TOO_LOW"
 
-        return {
-            "approved": False,
-            "reason": "CONFIDENCE_TOO_LOW",
-            "symbol": symbol,
-            "confidence": confidence,
-            "required_confidence":
-                min_confidence,
-        }
+    if rr < min_rr:
+        return False, "RISK_REWARD_TOO_LOW"
 
-    # --------------------------------------------------------
-    # BTC REGIME FILTER
-    # --------------------------------------------------------
+    if score <= 0:
+        return False, "INVALID_SCORE"
 
-    regime = str(
-        btc_regime
-        or signal.get("btc_regime", "UNKNOWN")
-    ).upper()
-
-    # BTC LONG rejimdeyse SHORT için
-    # daha güçlü teyit gerekir.
-    if regime == "LONG" and direction == "SHORT":
-
-        if confidence < 75:
-
-            return {
-                "approved": False,
-                "reason":
-                    "BTC_REGIME_AGAINST_SHORT",
-                "symbol": symbol,
-                "confidence": confidence,
-                "btc_regime": regime,
-            }
-
-    # BTC SHORT rejimdeyse LONG için
-    # daha güçlü teyit gerekir.
-    if regime == "SHORT" and direction == "LONG":
-
-        if confidence < 75:
-
-            return {
-                "approved": False,
-                "reason":
-                    "BTC_REGIME_AGAINST_LONG",
-                "symbol": symbol,
-                "confidence": confidence,
-                "btc_regime": regime,
-            }
-
-    # --------------------------------------------------------
-    # APPROVED
-    # --------------------------------------------------------
-
-    result = dict(signal)
-
-    result["symbol"] = symbol
-    result["direction"] = direction
-    result["entry"] = entry
-    result["stop"] = stop
-    result["tp1"] = tp1
-    result["tp2"] = tp2
-    result["rr"] = round(rr, 2)
-    result["confidence"] = round(
-        confidence,
-        1
+    entry = _num(
+        signal.get("entry")
     )
-    result["risk_approved"] = True
-    result["btc_regime"] = regime
 
-    return {
-        "approved": True,
-        "reason": "RISK_CHECK_PASSED",
-        "signal": result,
-    }
+    stop = _num(
+        signal.get("stop")
+    )
+
+    tp1 = _num(
+        signal.get("tp1")
+    )
+
+    tp2 = _num(
+        signal.get("tp2")
+    )
+
+    if entry <= 0:
+        return False, "INVALID_ENTRY"
+
+    if stop <= 0:
+        return False, "INVALID_STOP"
+
+    if tp1 <= 0 or tp2 <= 0:
+        return False, "INVALID_TARGET"
+
+    # --------------------------------------------------------
+    # LONG LEVEL VALIDATION
+    # --------------------------------------------------------
+
+    if direction == "LONG":
+
+        if stop >= entry:
+            return False, "LONG_STOP_INVALID"
+
+        if tp1 <= entry:
+            return False, "LONG_TP1_INVALID"
+
+        if tp2 <= tp1:
+            return False, "LONG_TP2_INVALID"
+
+    # --------------------------------------------------------
+    # SHORT LEVEL VALIDATION
+    # --------------------------------------------------------
+
+    if direction == "SHORT":
+
+        if stop <= entry:
+            return False, "SHORT_STOP_INVALID"
+
+        if tp1 >= entry:
+            return False, "SHORT_TP1_INVALID"
+
+        if tp2 >= tp1:
+            return False, "SHORT_TP2_INVALID"
+
+    # --------------------------------------------------------
+    # BTC REGIME
+    # --------------------------------------------------------
+
+    regime = _side(
+        btc_regime
+    )
+
+    # BTC ters yöndeyse tamamen yasaklamıyoruz.
+    # Ancak risk puanını düşürmek için metadata bırakıyoruz.
+    if (
+        regime in ("LONG", "SHORT")
+        and regime != direction
+    ):
+        signal["btc_conflict"] = True
+    else:
+        signal["btc_conflict"] = False
+
+    return True, "VALID"
 
 
-def filter_signals(
+# ============================================================
+# FINAL SIGNAL
+# ============================================================
+
+def get_final_signal(
     signals,
-    btc_regime: Optional[str] = None,
-    min_confidence: float = 65.0,
-    min_rr: float = 1.8,
+    btc_regime="UNKNOWN",
+    min_confidence=60,
+    min_rr=1.8,
 ):
+    if not signals:
+        return None
 
-    approved = []
-    rejected = []
+    valid = []
 
-    for signal in signals or []:
+    for signal in signals:
 
-        result = validate_signal(
+        ok, reason = validate_signal(
             signal,
             btc_regime=btc_regime,
             min_confidence=min_confidence,
             min_rr=min_rr,
         )
 
-        if result["approved"]:
+        if not ok:
+            continue
 
-            approved.append(
-                result["signal"]
-            )
+        item = dict(signal)
 
-        else:
+        item["risk_status"] = "APPROVED"
+        item["risk_reason"] = reason
 
-            rejected.append(result)
+        valid.append(item)
 
-    return {
-        "approved": approved,
-        "rejected": rejected,
-    }
-
-
-def get_final_signal(
-    signals,
-    btc_regime: Optional[str] = None,
-    min_confidence: float = 65.0,
-    min_rr: float = 1.8,
-):
-
-    result = filter_signals(
-        signals,
-        btc_regime=btc_regime,
-        min_confidence=min_confidence,
-        min_rr=min_rr,
-    )
-
-    if not result["approved"]:
+    if not valid:
         return None
 
-    # En yüksek güven + RR kombinasyonu
-    ranked = sorted(
-        result["approved"],
-        key=lambda x: (
-            _float(
-                x.get("confidence")
-            ),
-            _float(
-                x.get("rr")
-            ),
-        ),
-        reverse=True,
+    # --------------------------------------------------------
+    # RANK
+    # --------------------------------------------------------
+
+    def ranking(signal):
+
+        confidence = _num(
+            signal.get("confidence")
+        )
+
+        score = _num(
+            signal.get("score")
+        )
+
+        rr = _num(
+            signal.get("rr")
+        )
+
+        conflict_penalty = (
+            8
+            if signal.get("btc_conflict")
+            else 0
+        )
+
+        return (
+            confidence * 0.50
+            +
+            score * 4
+            +
+            min(rr, 4) * 5
+            -
+            conflict_penalty
+        )
+
+    best = max(
+        valid,
+        key=ranking
     )
 
-    return ranked[0]
+    # --------------------------------------------------------
+    # FINAL CONFIDENCE
+    # --------------------------------------------------------
+
+    confidence = _num(
+        best.get("confidence")
+    )
+
+    if best.get("btc_conflict"):
+        confidence -= 8
+
+    confidence = max(
+        0,
+        min(99, confidence)
+    )
+
+    # --------------------------------------------------------
+    # FINAL RESULT
+    # --------------------------------------------------------
+
+    result = dict(best)
+
+    result["confidence"] = round(
+        confidence,
+        1
+    )
+
+    result["risk_status"] = "APPROVED"
+
+    result["execution_ready"] = True
+
+    return result
+
+
+# ============================================================
+# POSITION SIZE
+# ============================================================
+
+def calculate_position_size(
+    balance,
+    entry,
+    stop,
+    risk_per_trade=0.01,
+):
+    balance = _num(balance)
+    entry = _num(entry)
+    stop = _num(stop)
+    risk_per_trade = _num(
+        risk_per_trade,
+        0.01
+    )
+
+    if (
+        balance <= 0
+        or entry <= 0
+        or stop <= 0
+    ):
+        return 0.0
+
+    risk_amount = (
+        balance
+        *
+        risk_per_trade
+    )
+
+    stop_distance = abs(
+        entry - stop
+    )
+
+    if stop_distance <= 0:
+        return 0.0
+
+    quantity = (
+        risk_amount
+        /
+        stop_distance
+    )
+
+    return quantity
+
+
+# ============================================================
+# MAX LOSS CHECK
+# ============================================================
+
+def daily_loss_allowed(
+    starting_balance,
+    current_balance,
+    max_daily_loss=0.03,
+):
+    starting_balance = _num(
+        starting_balance
+    )
+
+    current_balance = _num(
+        current_balance
+    )
+
+    max_daily_loss = _num(
+        max_daily_loss,
+        0.03
+    )
+
+    if starting_balance <= 0:
+        return False
+
+    loss = (
+        starting_balance
+        -
+        current_balance
+    )
+
+    loss_ratio = (
+        loss
+        /
+        starting_balance
+    )
+
+    return loss_ratio < max_daily_loss
