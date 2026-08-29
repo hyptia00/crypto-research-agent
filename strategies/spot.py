@@ -3,1223 +3,424 @@
 # SPOT STRATEGY ENGINE
 # ============================================================
 
-"""
-SPOT STRATEGY
+from market.indicators import (
+    calculate_indicators,
+    latest_indicators,
+)
 
-Spot piyasada yalnızca LONG / ALIM aranır.
-
-Ana akış:
-
-4H  -> büyük trend
-1H  -> trend + yapı teyidi
-15M -> setup / entry
-
-Ana prensip:
-
-"Çok düştü = AL" değildir.
-
-Spot alım için tercihen:
-
-- HTF trend uyumu
-- Market Structure
-- Liquidity Sweep
-- MSB / BOS / CHoCH
-- Displacement
-- FVG
-- Order Block
-- Mitigation
-- EMA
-- RSI
-- MACD
-- Volume
-- BTC regime
-- Risk / Reward
-
-birlikte değerlendirilir.
-
-Bu modül gerçek emir göndermez.
-"""
+from market.structure import (
+    analyze_structure,
+)
 
 
 # ============================================================
-# CONFIG
+# SETTINGS
 # ============================================================
 
 MIN_SCORE = 7
-STRONG_SCORE = 10
-
 MIN_RR = 2.0
 
-MAX_STOP_PERCENT = 0.12
+ATR_STOP_MULTIPLIER = 1.5
 
-RSI_MIN = 42
+RSI_MIN = 40
 RSI_MAX = 70
 
-# Aşırı düşüşten sonra otomatik dip satın alma engeli
-MAX_RECENT_DROP_PERCENT = -25.0
+
+# ============================================================
+# EMPTY SIGNAL
+# ============================================================
+
+def _wait(symbol, score=0, reasons=None):
+
+    return {
+        "symbol": symbol,
+        "market": "SPOT",
+        "side": "WAIT",
+        "score": score,
+        "confidence": 0,
+        "reasons": reasons or [],
+    }
 
 
 # ============================================================
-# HELPERS
+# TREND
 # ============================================================
 
-def safe_float(value, default=None):
+def _trend_score(indicator_data):
 
-    try:
-        return float(value)
+    if not indicator_data:
+        return 0
 
-    except (TypeError, ValueError):
+    price = indicator_data.get("price")
+    ema20 = indicator_data.get("ema20")
+    ema50 = indicator_data.get("ema50")
 
-        return default
-
-
-def get_bias(snapshot):
-
-    if not snapshot:
-        return "NEUTRAL"
-
-    structure = snapshot.get(
-        "structure",
-        {}
-    )
-
-    bias = structure.get(
-        "bias",
-        "SIDEWAYS"
-    )
-
-    if bias in (
-        "BULLISH",
-        "WEAK_BULLISH"
-    ):
-        return "LONG"
-
-    if bias in (
-        "BEARISH",
-        "WEAK_BEARISH"
-    ):
-        return "SHORT"
-
-    return "NEUTRAL"
-
-
-# ============================================================
-# MSB
-# ============================================================
-
-def has_bullish_msb(snapshot):
-
-    if not snapshot:
-        return False
-
-    events = snapshot.get(
-        "msb",
-        []
-    )
-
-    return any(
-        event.get("type")
-        == "MSB_BULLISH"
-        for event in events[-10:]
-    )
-
-
-# ============================================================
-# BOS
-# ============================================================
-
-def has_bullish_bos(snapshot):
-
-    if not snapshot:
-        return False
-
-    events = snapshot.get(
-        "breaks",
-        []
-    )
-
-    return any(
-        event.get("type")
-        == "BOS_BULLISH"
-        for event in events[-10:]
-    )
-
-
-# ============================================================
-# LIQUIDITY SWEEP
-# ============================================================
-
-def has_bullish_sweep(snapshot):
-
-    if not snapshot:
-        return False
-
-    events = snapshot.get(
-        "liquidity_sweeps",
-        []
-    )
-
-    return any(
-        event.get("type")
-        == "BULLISH_SWEEP"
-        for event in events[-10:]
-    )
-
-
-# ============================================================
-# DISPLACEMENT
-# ============================================================
-
-def has_bullish_displacement(snapshot):
-
-    if not snapshot:
-        return False
-
-    events = snapshot.get(
-        "displacement",
-        []
-    )
-
-    return any(
-        event.get("direction")
-        == "BULLISH"
-        for event in events[-5:]
-    )
-
-
-# ============================================================
-# FVG
-# ============================================================
-
-def has_bullish_fvg(snapshot):
-
-    if not snapshot:
-        return False
-
-    fvgs = snapshot.get(
-        "fvg",
-        []
-    )
-
-    for fvg in fvgs[-10:]:
-
-        if fvg.get(
-            "direction"
-        ) != "LONG":
-
-            continue
-
-        if fvg.get(
-            "filled"
-        ):
-
-            continue
-
-        return True
-
-    return False
-
-
-# ============================================================
-# ORDER BLOCK
-# ============================================================
-
-def has_bullish_order_block(snapshot):
-
-    if not snapshot:
-        return False
-
-    blocks = snapshot.get(
-        "order_blocks",
-        []
-    )
-
-    for block in blocks[-10:]:
-
-        if block.get(
-            "direction"
-        ) == "LONG":
-
-            return True
-
-    return False
-
-
-# ============================================================
-# EMA TREND
-# ============================================================
-
-def ema_trend_ok(
-    indicators
-):
-
-    if not indicators:
-        return False
-
-    price = safe_float(
-        indicators.get("price")
-    )
-
-    ema20 = safe_float(
-        indicators.get("ema20")
-    )
-
-    ema50 = safe_float(
-        indicators.get("ema50")
-    )
-
-    ema200 = safe_float(
-        indicators.get("ema200")
-    )
-
-    if price is None:
-        return False
-
-    if ema20 is None:
-        return False
-
-    # Fiyat EMA20 üzerinde olmalı
-    if price < ema20:
-        return False
-
-    # EMA20 > EMA50 tercihi
     if (
-        ema50 is not None
-        and ema20 < ema50
+        price is None
+        or ema20 is None
+        or ema50 is None
     ):
+        return 0
 
-        return False
+    if price > ema20 > ema50:
+        return 3
 
-    # EMA50 > EMA200 tercihi
-    if (
-        ema50 is not None
-        and ema200 is not None
-        and ema50 < ema200
-    ):
+    if price > ema20:
+        return 1
 
-        return False
-
-    return True
+    return 0
 
 
 # ============================================================
 # RSI
 # ============================================================
 
-def rsi_ok(
-    indicators
-):
+def _rsi_score(indicator_data):
 
-    if not indicators:
-        return True
+    if not indicator_data:
+        return 0
 
-    value = safe_float(
-        indicators.get("rsi")
-    )
+    value = indicator_data.get("rsi")
 
     if value is None:
-        return True
+        return 0
 
-    return (
-        RSI_MIN
-        <= value
-        <= RSI_MAX
-    )
+    if RSI_MIN <= value <= RSI_MAX:
+        return 1
+
+    return 0
 
 
 # ============================================================
 # MACD
 # ============================================================
 
-def macd_ok(
-    indicators
-):
+def _macd_score(indicator_data):
 
-    if not indicators:
-        return True
+    if not indicator_data:
+        return 0
 
-    histogram = safe_float(
-        indicators.get(
-            "macd_histogram"
-        )
+    histogram = indicator_data.get(
+        "macd_hist"
     )
 
     if histogram is None:
-        return True
+        return 0
 
-    return histogram > 0
+    if histogram > 0:
+        return 1
+
+    return 0
 
 
 # ============================================================
 # VOLUME
 # ============================================================
 
-def volume_ok(
-    indicators
-):
+def _volume_score(indicator_data):
 
-    if not indicators:
-        return True
+    if not indicator_data:
+        return 0
 
-    volume_data = indicators.get(
-        "volume",
-        {}
-    )
-
-    if not isinstance(
-        volume_data,
-        dict
-    ):
-
-        return True
-
-    ratio = safe_float(
-        volume_data.get(
-            "ratio"
-        )
+    ratio = indicator_data.get(
+        "volume_ratio"
     )
 
     if ratio is None:
-        return True
+        return 0
 
-    return ratio >= 0.8
+    if ratio >= 1.5:
+        return 2
 
+    if ratio >= 1.0:
+        return 1
 
-# ============================================================
-# RECENT PRICE PERFORMANCE
-# ============================================================
-
-def recent_change(
-    candles,
-    periods=20
-):
-
-    if not candles:
-        return 0.0
-
-    if len(candles) <= periods:
-        return 0.0
-
-    old_price = safe_float(
-        candles[-periods - 1].get(
-            "close"
-        )
-    )
-
-    current_price = safe_float(
-        candles[-1].get(
-            "close"
-        )
-    )
-
-    if (
-        old_price is None
-        or current_price is None
-        or old_price <= 0
-    ):
-
-        return 0.0
-
-    return (
-        (current_price - old_price)
-        / old_price
-    ) * 100
+    return 0
 
 
 # ============================================================
-# FALLING KNIFE FILTER
+# STRUCTURE
 # ============================================================
 
-def falling_knife_filter(
-    candles_4h,
-    snapshot_4h,
-    indicators_4h
-):
+def _structure_score(structure):
 
-    """
-    Çok sert düşen coinlerde sırf ucuzladı diye
-    spot alımı engeller.
-
-    Fakat bullish reversal oluşmuşsa yeniden
-    değerlendirilmesine izin verir.
-    """
-
-    change = recent_change(
-        candles_4h,
-        20
-    )
-
-    if change > MAX_RECENT_DROP_PERCENT:
-
-        return True
-
-    # Sert düşüş var.
-    # Ancak bullish MSB varsa toparlanma işareti
-    # kabul edilir.
-
-    if has_bullish_msb(
-        snapshot_4h
-    ):
-
-        return True
-
-    return False
-
-
-# ============================================================
-# MARKET REGIME
-# ============================================================
-
-def btc_regime_ok(
-    btc_regime
-):
-
-    """
-    Spot için BTC rejimi daha önemlidir.
-
-    BTC SHORT rejimindeyken
-    agresif altcoin alımı istemiyoruz.
-    """
-
-    if btc_regime in (
-        None,
-        "NEUTRAL"
-    ):
-
-        return True
-
-    if btc_regime == "LONG":
-
-        return True
-
-    # BTC SHORT ise sadece çok güçlü
-    # reversal setup'larına daha sonra izin verilebilir.
-    return False
-
-
-# ============================================================
-# ENTRY ZONE
-# ============================================================
-
-def find_entry_zone(
-    snapshot,
-    price
-):
-
-    """
-    Öncelik:
-
-    1. Bullish FVG
-    2. Bullish Order Block
-    3. Market
-    """
-
-    # --------------------------------------------------------
-    # FVG
-    # --------------------------------------------------------
-
-    fvgs = snapshot.get(
-        "fvg",
-        []
-    )
-
-    for fvg in reversed(fvgs):
-
-        if fvg.get(
-            "direction"
-        ) != "LONG":
-
-            continue
-
-        if fvg.get(
-            "filled"
-        ):
-
-            continue
-
-        low = safe_float(
-            fvg.get("bottom")
-        )
-
-        high = safe_float(
-            fvg.get("top")
-        )
-
-        if (
-            low is not None
-            and high is not None
-        ):
-
-            return {
-                "type": "FVG",
-                "low": low,
-                "high": high,
-            }
-
-    # --------------------------------------------------------
-    # ORDER BLOCK
-    # --------------------------------------------------------
-
-    blocks = snapshot.get(
-        "order_blocks",
-        []
-    )
-
-    for block in reversed(blocks):
-
-        if block.get(
-            "direction"
-        ) != "LONG":
-
-            continue
-
-        low = safe_float(
-            block.get("low")
-        )
-
-        high = safe_float(
-            block.get("high")
-        )
-
-        if (
-            low is not None
-            and high is not None
-        ):
-
-            return {
-                "type": "ORDER_BLOCK",
-                "low": low,
-                "high": high,
-            }
-
-    return {
-        "type": "MARKET",
-        "low": price,
-        "high": price,
-    }
-
-
-# ============================================================
-# STOP LOSS
-# ============================================================
-
-def calculate_stop(
-    snapshot_15m,
-    snapshot_1h,
-    entry,
-    atr
-):
-
-    candidates = []
-
-    # --------------------------------------------------------
-    # 15M SWING LOW
-    # --------------------------------------------------------
-
-    swings_15m = snapshot_15m.get(
-        "last_swings",
-        {}
-    )
-
-    last_low = swings_15m.get(
-        "last_low"
-    )
-
-    if last_low:
-
-        value = safe_float(
-            last_low.get(
-                "price"
-            )
-        )
-
-        if value is not None:
-            candidates.append(
-                value
-            )
-
-    # --------------------------------------------------------
-    # 1H SWING LOW
-    # --------------------------------------------------------
-
-    swings_1h = snapshot_1h.get(
-        "last_swings",
-        {}
-    )
-
-    last_low_1h = swings_1h.get(
-        "last_low"
-    )
-
-    if last_low_1h:
-
-        value = safe_float(
-            last_low_1h.get(
-                "price"
-            )
-        )
-
-        if value is not None:
-            candidates.append(
-                value
-            )
-
-    # --------------------------------------------------------
-    # ATR
-    # --------------------------------------------------------
-
-    atr = safe_float(
-        atr
-    )
-
-    if atr is not None:
-
-        candidates.append(
-            entry - (
-                atr * 1.5
-            )
-        )
-
-    # --------------------------------------------------------
-    # FINAL STOP
-    # --------------------------------------------------------
-
-    valid = [
-        x for x in candidates
-        if x < entry
-    ]
-
-    if valid:
-
-        return min(valid)
-
-    return entry * 0.97
-
-
-# ============================================================
-# TARGETS
-# ============================================================
-
-def calculate_targets(
-    entry,
-    stop
-):
-
-    risk = abs(
-        entry - stop
-    )
-
-    if risk <= 0:
-
-        return {
-            "tp1": None,
-            "tp2": None,
-            "rr1": 0,
-            "rr2": 0,
-        }
-
-    return {
-
-        "tp1":
-            entry + risk * 2,
-
-        "tp2":
-            entry + risk * 3,
-
-        "rr1":
-            2.0,
-
-        "rr2":
-            3.0,
-    }
-
-
-# ============================================================
-# SPOT EVALUATION
-# ============================================================
-
-def evaluate_spot(
-    symbol,
-    data,
-    indicators,
-    structures,
-    btc_regime
-):
+    if not structure:
+        return 0, []
 
     score = 0
     reasons = []
 
-    # ========================================================
-    # REQUIRED DATA
-    # ========================================================
+    # --------------------------------------------------------
+    # BIAS
+    # --------------------------------------------------------
 
-    candles_4h = data.get(
-        "4h",
-        []
+    bias = structure.get(
+        "bias"
     )
 
-    candles_1h = data.get(
-        "1h",
-        []
-    )
-
-    candles_15m = data.get(
-        "15m",
-        []
-    )
-
-    if not candles_4h:
-        return None
-
-    if not candles_1h:
-        return None
-
-    if not candles_15m:
-        return None
-
-    # ========================================================
-    # SNAPSHOTS
-    # ========================================================
-
-    snapshot_4h = structures.get(
-        "4h",
-        {}
-    )
-
-    snapshot_1h = structures.get(
-        "1h",
-        {}
-    )
-
-    snapshot_15m = structures.get(
-        "15m",
-        {}
-    )
-
-    # ========================================================
-    # 4H STRUCTURE
-    # ========================================================
-
-    bias_4h = get_bias(
-        snapshot_4h
-    )
-
-    if bias_4h == "LONG":
-
-        score += 3
-
-        reasons.append(
-            "4H bullish structure"
-        )
-
-    else:
-
-        return None
-
-    # ========================================================
-    # 1H STRUCTURE
-    # ========================================================
-
-    bias_1h = get_bias(
-        snapshot_1h
-    )
-
-    if bias_1h == "LONG":
+    if bias == "BULLISH":
 
         score += 2
 
         reasons.append(
-            "1H bullish structure"
+            "Bullish market structure"
         )
 
-    else:
+    elif bias == "BEARISH":
 
-        return None
-
-    # ========================================================
-    # 15M STRUCTURE
-    # ========================================================
-
-    bias_15m = get_bias(
-        snapshot_15m
-    )
-
-    if bias_15m == "LONG":
-
-        score += 2
+        # Spot için bearish yapı ciddi negatif.
+        score -= 3
 
         reasons.append(
-            "15M bullish structure"
+            "Bearish market structure"
         )
 
-    else:
-
-        return None
-
-    # ========================================================
-    # BULLISH MSB
-    # ========================================================
-
-    if has_bullish_msb(
-        snapshot_15m
-    ):
-
-        score += 3
-
-        reasons.append(
-            "15M bullish MSB"
-        )
-
-    # ========================================================
-    # LIQUIDITY SWEEP
-    # ========================================================
-
-    if has_bullish_sweep(
-        snapshot_15m
-    ):
-
-        score += 2
-
-        reasons.append(
-            "15M liquidity sweep"
-        )
-
-    # ========================================================
+    # --------------------------------------------------------
     # BOS
-    # ========================================================
+    # --------------------------------------------------------
 
-    if has_bullish_bos(
-        snapshot_15m
-    ):
+    for event in structure.get(
+        "bos",
+        []
+    )[-5:]:
 
-        score += 1
+        if event.get(
+            "direction"
+        ) == "BULLISH":
 
-        reasons.append(
-            "15M bullish BOS"
-        )
+            score += 2
 
-    # ========================================================
-    # DISPLACEMENT
-    # ========================================================
+            reasons.append(
+                "Bullish BOS"
+            )
 
-    if has_bullish_displacement(
-        snapshot_15m
-    ):
+            break
 
-        score += 2
+    # --------------------------------------------------------
+    # CHoCH
+    # --------------------------------------------------------
 
-        reasons.append(
-            "15M bullish displacement"
-        )
+    for event in structure.get(
+        "choch",
+        []
+    )[-5:]:
 
-    # ========================================================
+        if event.get(
+            "direction"
+        ) == "BULLISH":
+
+            score += 2
+
+            reasons.append(
+                "Bullish CHoCH"
+            )
+
+            break
+
+    # --------------------------------------------------------
+    # MSB
+    # --------------------------------------------------------
+
+    for event in structure.get(
+        "msb",
+        []
+    )[-5:]:
+
+        if event.get(
+            "direction"
+        ) == "BULLISH":
+
+            score += 3
+
+            reasons.append(
+                "Bullish MSB"
+            )
+
+            break
+
+    # --------------------------------------------------------
+    # LIQUIDITY SWEEP
+    # --------------------------------------------------------
+
+    for event in structure.get(
+        "liquidity_sweeps",
+        []
+    )[-5:]:
+
+        if event.get(
+            "direction"
+        ) == "BULLISH":
+
+            score += 2
+
+            reasons.append(
+                "Sell-side liquidity sweep"
+            )
+
+            break
+
+    # --------------------------------------------------------
     # FVG
-    # ========================================================
+    # --------------------------------------------------------
 
-    if has_bullish_fvg(
-        snapshot_15m
-    ):
+    for event in structure.get(
+        "fvg",
+        []
+    )[-10:]:
 
-        score += 1
+        if event.get(
+            "direction"
+        ) == "BULLISH":
 
-        reasons.append(
-            "Bullish FVG"
-        )
+            score += 1
 
-    # ========================================================
+            reasons.append(
+                "Bullish FVG"
+            )
+
+            break
+
+    # --------------------------------------------------------
     # ORDER BLOCK
-    # ========================================================
+    # --------------------------------------------------------
 
-    if has_bullish_order_block(
-        snapshot_15m
-    ):
+    for event in structure.get(
+        "order_blocks",
+        []
+    )[-10:]:
 
-        score += 1
+        if event.get(
+            "direction"
+        ) == "BULLISH":
 
-        reasons.append(
-            "Bullish Order Block"
-        )
+            score += 1
 
-    # ========================================================
-    # 4H EMA
-    # ========================================================
+            reasons.append(
+                "Bullish Order Block"
+            )
 
-    ind_4h = indicators.get(
-        "4h",
+            break
+
+    # --------------------------------------------------------
+    # DISPLACEMENT
+    # --------------------------------------------------------
+
+    for event in structure.get(
+        "displacement",
+        []
+    )[-5:]:
+
+        if event.get(
+            "direction"
+        ) == "BULLISH":
+
+            score += 2
+
+            reasons.append(
+                "Bullish displacement"
+            )
+
+            break
+
+    return score, reasons
+
+
+# ============================================================
+# TRADE PARAMETERS
+# ============================================================
+
+def _calculate_trade(
+    symbol,
+    candles,
+    indicators,
+    structure,
+):
+
+    if candles is None or candles.empty:
+        return None
+
+    price = float(
+        candles.iloc[-1]["close"]
+    )
+
+    atr = indicators.get(
+        "atr"
+    )
+
+    if atr is None or atr <= 0:
+        return None
+
+    # --------------------------------------------------------
+    # LAST SWING LOW
+    # --------------------------------------------------------
+
+    last_swings = structure.get(
+        "last_swings",
         {}
     )
 
-    if ema_trend_ok(
-        ind_4h
-    ):
-
-        score += 2
-
-        reasons.append(
-            "4H EMA trend"
-        )
-
-    # ========================================================
-    # 1H EMA
-    # ========================================================
-
-    ind_1h = indicators.get(
-        "1h",
-        {}
+    swing_low = last_swings.get(
+        "last_low"
     )
 
-    if ema_trend_ok(
-        ind_1h
-    ):
+    swing_price = None
 
-        score += 2
+    if swing_low:
 
-        reasons.append(
-            "1H EMA trend"
+        swing_price = swing_low.get(
+            "price"
         )
 
-    # ========================================================
-    # RSI
-    # ========================================================
+    # --------------------------------------------------------
+    # STOP
+    # --------------------------------------------------------
 
-    if rsi_ok(
-        ind_1h
-    ):
-
-        score += 1
-
-        reasons.append(
-            "1H RSI uygun"
-        )
-
-    # ========================================================
-    # MACD
-    # ========================================================
-
-    if macd_ok(
-        ind_1h
-    ):
-
-        score += 1
-
-        reasons.append(
-            "1H MACD bullish"
-        )
-
-    # ========================================================
-    # VOLUME
-    # ========================================================
-
-    ind_15m = indicators.get(
-        "15m",
-        {}
+    atr_stop = (
+        price -
+        atr * ATR_STOP_MULTIPLIER
     )
 
-    if volume_ok(
-        ind_15m
-    ):
+    if swing_price is not None:
 
-        score += 1
-
-        reasons.append(
-            "15M volume uygun"
-        )
-
-    # ========================================================
-    # BTC REGIME
-    # ========================================================
-
-    if btc_regime_ok(
-        btc_regime
-    ):
-
-        score += 1
-
-        reasons.append(
-            "BTC regime uygun"
+        stop = min(
+            float(swing_price),
+            atr_stop
         )
 
     else:
 
-        # BTC tersken spot işlem istemiyoruz.
-        return None
+        stop = atr_stop
 
-    # ========================================================
-    # FALLING KNIFE
-    # ========================================================
-
-    if not falling_knife_filter(
-        candles_4h,
-        snapshot_4h,
-        ind_4h
-    ):
-
-        return None
-
-    # ========================================================
-    # SCORE CHECK
-    # ========================================================
-
-    if score < MIN_SCORE:
-
-        return None
-
-    # ========================================================
-    # ENTRY
-    # ========================================================
-
-    entry = safe_float(
-        candles_15m[-1].get(
-            "close"
-        )
-    )
-
-    if entry is None:
-
-        return None
-
-    # ========================================================
-    # STOP
-    # ========================================================
-
-    atr = safe_float(
-        ind_15m.get(
-            "atr"
-        )
-    )
-
-    stop = calculate_stop(
-
-        snapshot_15m,
-
-        snapshot_1h,
-
-        entry,
-
-        atr,
-
-    )
-
-    if stop >= entry:
-
-        return None
-
-    # ========================================================
-    # STOP DISTANCE
-    # ========================================================
-
-    stop_distance = (
-        abs(entry - stop)
-        / entry
-    )
-
-    if stop_distance > MAX_STOP_PERCENT:
-
-        return None
-
-    # ========================================================
-    # TARGETS
-    # ========================================================
-
-    targets = calculate_targets(
-        entry,
-        stop
-    )
-
-    if not targets["tp2"]:
-
-        return None
-
-    # ========================================================
-    # R/R
-    # ========================================================
-
-    risk = abs(
-        entry - stop
-    )
-
-    reward = abs(
-        targets["tp2"]
-        - entry
-    )
+    risk = price - stop
 
     if risk <= 0:
-
         return None
 
-    rr = reward / risk
+    # --------------------------------------------------------
+    # TARGETS
+    # --------------------------------------------------------
 
-    if rr < MIN_RR:
+    tp1 = price + risk * 2
 
-        return None
+    tp2 = price + risk * 3
 
-    # ========================================================
-    # CONFIDENCE
-    # ========================================================
-
-    confidence = min(
-        99,
-        int(
-            45
-            + score * 4
-        )
+    rr = (
+        abs(tp2 - price)
+        / risk
     )
 
-    if score >= STRONG_SCORE:
-
-        confidence = min(
-            99,
-            confidence + 5
-        )
-
-    # ========================================================
-    # RESULT
-    # ========================================================
+    if rr < MIN_RR:
+        return None
 
     return {
-
-        "symbol":
-            symbol,
-
-        "strategy":
-            "SPOT",
-
-        "signal":
-            "LONG",
-
-        "score":
-            score,
-
-        "confidence":
-            confidence,
-
-        "entry":
-            entry,
-
-        "stop":
-            stop,
-
-        "tp1":
-            targets["tp1"],
-
-        "tp2":
-            targets["tp2"],
-
-        "rr":
-            rr,
-
-        "timeframe":
-            "4H > 1H > 15M",
-
-        "btc_regime":
-            btc_regime,
-
-        "reasons":
-            reasons,
-
-        "execution":
-            "PAPER_ONLY",
-
+        "symbol": symbol,
+        "market": "SPOT",
+        "side": "BUY",
+        "entry": price,
+        "stop": stop,
+        "tp1": tp1,
+        "tp2": tp2,
+        "rr": rr,
     }
 
 
@@ -1230,201 +431,337 @@ def evaluate_spot(
 def analyze_spot(
     symbol,
     data,
-    indicators,
-    structures,
-    btc_regime="NEUTRAL"
 ):
 
     """
-    Agent tarafından çağrılan ana fonksiyon.
+    data:
+
+    {
+        "4h": DataFrame,
+        "1h": DataFrame,
+        "15m": DataFrame,
+    }
+
+    Spot tarafında yalnızca BUY üretilir.
     """
 
-    try:
+    if not data:
+        return _wait(symbol)
 
-        result = evaluate_spot(
+    # ========================================================
+    # DATA
+    # ========================================================
 
+    df4 = data.get("4h")
+    df1 = data.get("1h")
+    df15 = data.get("15m")
+
+    if (
+        df4 is None
+        or df1 is None
+        or df15 is None
+    ):
+        return _wait(
             symbol,
-
-            data,
-
-            indicators,
-
-            structures,
-
-            btc_regime,
-
+            reasons=[
+                "Eksik timeframe verisi"
+            ]
         )
 
-        if result is None:
-
-            return {
-
-                "symbol":
-                    symbol,
-
-                "strategy":
-                    "SPOT",
-
-                "signal":
-                    "WAIT",
-
-                "score":
-                    0,
-
-                "reason":
-                    "Yeterli Spot setup oluşmadı",
-
-            }
-
-        return result
-
-    except Exception as e:
-
-        return {
-
-            "symbol":
-                symbol,
-
-            "strategy":
-                "SPOT",
-
-            "signal":
-                "ERROR",
-
-            "score":
-                0,
-
-            "reason":
-                str(e),
-
-        }
-
-
-# ============================================================
-# SUMMARY
-# ============================================================
-
-def spot_summary(
-    result
-):
-
-    if not result:
-
-        return "SPOT: WAIT"
-
-    if result.get(
-        "signal"
-    ) != "LONG":
-
-        return (
-
-            f'{result.get("symbol")} '
-            f'SPOT WAIT | '
-            f'{result.get("reason", "")}'
-
+    if (
+        df4.empty
+        or df1.empty
+        or df15.empty
+    ):
+        return _wait(
+            symbol,
+            reasons=[
+                "Boş timeframe verisi"
+            ]
         )
 
-    return (
+    # ========================================================
+    # INDICATORS
+    # ========================================================
 
-        f'{result["symbol"]} '
-        f'SPOT LONG | '
+    ind4 = latest_indicators(
+        df4
+    )
 
-        f'Skor: '
-        f'{result["score"]} | '
+    ind1 = latest_indicators(
+        df1
+    )
 
-        f'Güven: '
-        f'%{result["confidence"]} | '
+    ind15 = latest_indicators(
+        df15
+    )
 
-        f'Entry: '
-        f'{result["entry"]} | '
+    # ========================================================
+    # STRUCTURE
+    # ========================================================
 
-        f'SL: '
-        f'{result["stop"]} | '
+    struct4 = analyze_structure(
+        calculate_indicators(
+            df4
+        )
+    )
 
-        f'TP1: '
-        f'{result["tp1"]} | '
+    struct1 = analyze_structure(
+        calculate_indicators(
+            df1
+        )
+    )
 
-        f'TP2: '
-        f'{result["tp2"]} | '
+    struct15 = analyze_structure(
+        calculate_indicators(
+            df15
+        )
+    )
 
-        f'R/R: '
-        f'{result["rr"]:.2f}'
+    # ========================================================
+    # SCORE
+    # ========================================================
+
+    score = 0
+    reasons = []
+
+    # --------------------------------------------------------
+    # 4H TREND
+    # --------------------------------------------------------
+
+    trend4 = _trend_score(
+        ind4
+    )
+
+    score += trend4
+
+    if trend4 >= 3:
+
+        reasons.append(
+            "4H bullish trend"
+        )
+
+    elif trend4 == 1:
+
+        reasons.append(
+            "4H price above EMA20"
+        )
+
+    # --------------------------------------------------------
+    # 4H STRUCTURE
+    # --------------------------------------------------------
+
+    struct_score4, struct_reasons4 = (
+        _structure_score(
+            struct4
+        )
+    )
+
+    score += struct_score4
+
+    reasons.extend(
+        [
+            f"4H {reason}"
+            for reason in struct_reasons4
+        ]
+    )
+
+    # --------------------------------------------------------
+    # 1H TREND
+    # --------------------------------------------------------
+
+    trend1 = _trend_score(
+        ind1
+    )
+
+    score += trend1
+
+    if trend1 >= 3:
+
+        reasons.append(
+            "1H bullish trend"
+        )
+
+    elif trend1 == 1:
+
+        reasons.append(
+            "1H price above EMA20"
+        )
+
+    # --------------------------------------------------------
+    # 1H STRUCTURE
+    # --------------------------------------------------------
+
+    struct_score1, struct_reasons1 = (
+        _structure_score(
+            struct1
+        )
+    )
+
+    score += struct_score1
+
+    reasons.extend(
+        [
+            f"1H {reason}"
+            for reason in struct_reasons1
+        ]
+    )
+
+    # --------------------------------------------------------
+    # 15M SETUP
+    # --------------------------------------------------------
+
+    struct_score15, struct_reasons15 = (
+        _structure_score(
+            struct15
+        )
+    )
+
+    score += struct_score15
+
+    reasons.extend(
+        [
+            f"15M {reason}"
+            for reason in struct_reasons15
+        ]
+    )
+
+    # --------------------------------------------------------
+    # INDICATORS
+    # --------------------------------------------------------
+
+    rsi_score = _rsi_score(
+        ind15
+    )
+
+    score += rsi_score
+
+    if rsi_score:
+        reasons.append(
+            "15M RSI confirmation"
+        )
+
+    macd_score = _macd_score(
+        ind15
+    )
+
+    score += macd_score
+
+    if macd_score:
+        reasons.append(
+            "15M MACD confirmation"
+        )
+
+    volume_score = _volume_score(
+        ind15
+    )
+
+    score += volume_score
+
+    if volume_score:
+        reasons.append(
+            "15M volume confirmation"
+        )
+
+    # ========================================================
+    # BEARISH FILTER
+    # ========================================================
+
+    if (
+        struct4.get("bias")
+        == "BEARISH"
+    ):
+
+        return _wait(
+            symbol,
+            score,
+            reasons + [
+                "4H bearish: spot BUY engellendi"
+            ]
+        )
+
+    # ========================================================
+    # MINIMUM SCORE
+    # ========================================================
+
+    if score < MIN_SCORE:
+
+        return _wait(
+            symbol,
+            score,
+            reasons
+        )
+
+    # ========================================================
+    # TRADE
+    # ========================================================
+
+    trade = _calculate_trade(
+
+        symbol,
+
+        df15,
+
+        ind15,
+
+        struct15,
 
     )
 
+    if trade is None:
 
-# ============================================================
-# TEST
-# ============================================================
+        return _wait(
+            symbol,
+            score,
+            reasons + [
+                "Uygun R/R veya SL bulunamadı"
+            ]
+        )
 
-if __name__ == "__main__":
+    # ========================================================
+    # CONFIDENCE
+    # ========================================================
 
-    print("=" * 60)
-
-    print(
-        "SPOT STRATEGY ENGINE"
+    confidence = min(
+        95,
+        45 + score * 4
     )
 
-    print("=" * 60)
+    if (
+        struct4.get("bias")
+        == "BULLISH"
+        and struct1.get("bias")
+        == "BULLISH"
+    ):
 
-    print()
+        confidence += 5
 
-    print(
-        "4H -> 1H -> 15M"
+    confidence = min(
+        confidence,
+        99
     )
 
-    print()
+    # ========================================================
+    # RESULT
+    # ========================================================
 
-    print(
-        "SPOT yalnızca LONG arar."
-    )
+    trade.update({
 
-    print()
+        "score":
+            score,
 
-    print(
-        "Market Structure"
-    )
+        "confidence":
+            confidence,
 
-    print(
-        "MSB / BOS / CHoCH"
-    )
+        "timeframe":
+            "4H > 1H > 15M",
 
-    print(
-        "Liquidity Sweep"
-    )
+        "status":
+            "PAPER_ONLY",
 
-    print(
-        "FVG / Order Block"
-    )
+        "reasons":
+            reasons,
 
-    print(
-        "Displacement"
-    )
+    })
 
-    print(
-        "EMA / RSI / MACD / Volume"
-    )
-
-    print(
-        "BTC Regime"
-    )
-
-    print(
-        "Falling Knife Protection"
-    )
-
-    print(
-        "Entry / SL / TP / R:R"
-    )
-
-    print()
-
-    print(
-        "Gerçek emir: KAPALI"
-    )
-
-    print(
-        "SPOT ENGINE HAZIR"
-    )
-
-    print("=" * 60)
+    return trade
