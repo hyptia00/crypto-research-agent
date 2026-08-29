@@ -1,8 +1,12 @@
 import json
 import urllib.request
 import urllib.parse
+import time
+import math
 
-COINS = [
+BASE_URL = "https://data-api.binance.vision"
+
+WATCHLIST = [
     "BTCUSDT",
     "ETHUSDT",
     "SOLUSDT",
@@ -12,68 +16,65 @@ COINS = [
     "NEARUSDT",
     "JUPUSDT",
     "MOVRUSDT",
-    "TNSRUSDT"
+    "TNSRUSDT",
 ]
 
-BINANCE_URL = "https://data-api.binance.vision/api/v3/klines"
+INTERVAL = "1h"
+KLINE_LIMIT = 200
+
+MIN_QUOTE_VOLUME = 5_000_000
+SCAN_LIMIT = 40
 
 
-def get_candles(symbol):
-    params = urllib.parse.urlencode({
-        "symbol": symbol,
-        "interval": "1h",
-        "limit": 200
-    })
+def get_json(path, params=None, retries=3):
+    if params:
+        path += "?" + urllib.parse.urlencode(params)
 
-    url = BINANCE_URL + "?" + params
+    url = BASE_URL + path
 
-    request = urllib.request.Request(
-        url,
-        headers={"User-Agent": "Crypto-Research-Agent"}
-    )
+    for attempt in range(retries):
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": "CryptoResearchAgent/1.0"
+                }
+            )
 
-    with urllib.request.urlopen(request, timeout=20) as response:
-        data = json.loads(response.read().decode())
+            with urllib.request.urlopen(req, timeout=15) as response:
+                return json.loads(response.read().decode())
 
-    candles = []
+        except Exception as e:
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)
+            else:
+                raise e
 
-    for c in data:
-        candles.append({
-            "open": float(c[1]),
-            "high": float(c[2]),
-            "low": float(c[3]),
-            "close": float(c[4]),
-            "volume": float(c[5])
-        })
 
-    return candles
+def sma(values, period):
+    if len(values) < period:
+        return None
+    return sum(values[-period:]) / period
 
 
 def ema(values, period):
+    if len(values) < period:
+        return None
+
     multiplier = 2 / (period + 1)
-    value = values[0]
 
-    for price in values[1:]:
-        value = (price - value) * multiplier + value
+    result = sum(values[:period]) / period
 
-    return value
-
-
-def ema_series(values, period):
-    result = []
-    multiplier = 2 / (period + 1)
-    value = values[0]
-
-    result.append(value)
-
-    for price in values[1:]:
-        value = (price - value) * multiplier + value
-        result.append(value)
+    for price in values[period:]:
+        result = (price - result) * multiplier + result
 
     return result
 
 
 def rsi(values, period=14):
+    if len(values) < period + 1:
+        return None
+
     gains = []
     losses = []
 
@@ -83,8 +84,12 @@ def rsi(values, period=14):
         gains.append(max(change, 0))
         losses.append(max(-change, 0))
 
-    avg_gain = sum(gains[-period:]) / period
-    avg_loss = sum(losses[-period:]) / period
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+
+    for i in range(period, len(gains)):
+        avg_gain = ((avg_gain * (period - 1)) + gains[i]) / period
+        avg_loss = ((avg_loss * (period - 1)) + losses[i]) / period
 
     if avg_loss == 0:
         return 100
@@ -94,281 +99,586 @@ def rsi(values, period=14):
     return 100 - (100 / (1 + rs))
 
 
-def macd(values):
-    ema12 = ema_series(values, 12)
-    ema26 = ema_series(values, 26)
+def true_ranges(highs, lows, closes):
+    tr = []
 
-    macd_line = []
-
-    for i in range(len(values)):
-        macd_line.append(ema12[i] - ema26[i])
-
-    signal_series = ema_series(macd_line, 9)
-
-    return macd_line[-1], signal_series[-1]
-
-
-def atr(candles, period=14):
-    true_ranges = []
-
-    for i in range(1, len(candles)):
-        high = candles[i]["high"]
-        low = candles[i]["low"]
-        previous_close = candles[i - 1]["close"]
-
-        tr = max(
-            high - low,
-            abs(high - previous_close),
-            abs(low - previous_close)
+    for i in range(1, len(closes)):
+        value = max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i] - closes[i - 1])
         )
 
-        true_ranges.append(tr)
+        tr.append(value)
 
-    return sum(true_ranges[-period:]) / period
-
-
-def volume_ratio(candles, period=20):
-    current_volume = candles[-1]["volume"]
-
-    previous_volumes = [
-        candle["volume"]
-        for candle in candles[-period-1:-1]
-    ]
-
-    average_volume = sum(previous_volumes) / len(previous_volumes)
-
-    if average_volume == 0:
-        return 1
-
-    return current_volume / average_volume
+    return tr
 
 
-def support_resistance(candles, period=50):
-    recent = candles[-period:]
+def atr(highs, lows, closes, period=14):
+    tr = true_ranges(highs, lows, closes)
 
-    support = min(c["low"] for c in recent)
-    resistance = max(c["high"] for c in recent)
+    if len(tr) < period:
+        return None
 
-    return support, resistance
+    return sum(tr[-period:]) / period
 
 
-def analyze(symbol):
-    candles = get_candles(symbol)
+def macd(values):
+    if len(values) < 50:
+        return None, None, None
 
-    closes = [c["close"] for c in candles]
+    ema12 = []
+    ema26 = []
+
+    multiplier12 = 2 / 13
+    multiplier26 = 2 / 27
+
+    e12 = sum(values[:12]) / 12
+    e26 = sum(values[:26]) / 26
+
+    for price in values[12:]:
+        e12 = (price - e12) * multiplier12 + e12
+        ema12.append(e12)
+
+    for price in values[26:]:
+        e26 = (price - e26) * multiplier26 + e26
+
+    length = min(len(ema12), len(ema26))
+
+    macd_values = []
+
+    for i in range(length):
+        macd_values.append(
+            ema12[-length + i] - ema26[-length + i]
+        )
+
+    if len(macd_values) < 9:
+        return None, None, None
+
+    signal = ema(macd_values, 9)
+
+    return macd_values[-1], signal, macd_values[-1] - signal
+
+
+def get_klines(symbol):
+    return get_json(
+        "/api/v3/klines",
+        {
+            "symbol": symbol,
+            "interval": INTERVAL,
+            "limit": KLINE_LIMIT
+        }
+    )
+
+
+def parse_klines(data):
+    opens = [float(x[1]) for x in data]
+    highs = [float(x[2]) for x in data]
+    lows = [float(x[3]) for x in data]
+    closes = [float(x[4]) for x in data]
+    volumes = [float(x[5]) for x in data]
+
+    return opens, highs, lows, closes, volumes
+
+
+def calculate_levels(highs, lows, closes, atr_value):
+    recent_high = max(highs[-50:])
+    recent_low = min(lows[-50:])
+
+    price = closes[-1]
+
+    supports = [x for x in lows[-50:] if x < price]
+    resistances = [x for x in highs[-50:] if x > price]
+
+    if supports:
+        support = max(supports)
+    else:
+        support = price - atr_value * 2
+
+    if resistances:
+        resistance = min(resistances)
+    else:
+        resistance = price + atr_value * 2
+
+    return support, resistance, recent_low, recent_high
+
+
+def analyze(symbol, data):
+    opens, highs, lows, closes, volumes = parse_klines(data)
 
     price = closes[-1]
 
     ema20 = ema(closes, 20)
     ema50 = ema(closes, 50)
 
-    current_rsi = rsi(closes)
+    rsi14 = rsi(closes, 14)
 
-    macd_value, macd_signal = macd(closes)
+    macd_value, macd_signal, macd_hist = macd(closes)
 
-    current_atr = atr(candles)
+    atr14 = atr(highs, lows, closes, 14)
 
-    vol_ratio = volume_ratio(candles)
+    volume_avg = sma(volumes[:-1], 20)
 
-    support, resistance = support_resistance(candles)
-
-    score = 0
-
-    reasons = []
-
-    # EMA TREND
-    if price > ema20:
-        score += 1
-        reasons.append("Fiyat EMA20 ustunde")
+    if volume_avg:
+        volume_ratio = volumes[-1] / volume_avg
     else:
-        score -= 1
-        reasons.append("Fiyat EMA20 altinda")
+        volume_ratio = 0
+
+    support, resistance, recent_low, recent_high = calculate_levels(
+        highs,
+        lows,
+        closes,
+        atr14
+    )
+
+    score_long = 0
+    score_short = 0
+
+    long_reasons = []
+    short_reasons = []
+
+    # =========================
+    # TREND
+    # =========================
+
+    if price > ema20:
+        score_long += 1
+        long_reasons.append("Fiyat EMA20 üzerinde")
 
     if ema20 > ema50:
-        score += 1
-        reasons.append("EMA20 EMA50 ustunde")
-    else:
-        score -= 1
-        reasons.append("EMA20 EMA50 altinda")
+        score_long += 1
+        long_reasons.append("EMA20 > EMA50")
 
+    if price < ema20:
+        score_short += 1
+        short_reasons.append("Fiyat EMA20 altında")
+
+    if ema20 < ema50:
+        score_short += 1
+        short_reasons.append("EMA20 < EMA50")
+
+    # =========================
     # RSI
-    if 50 <= current_rsi <= 70:
-        score += 1
-        reasons.append("RSI pozitif")
-    elif current_rsi < 35:
-        score += 1
-        reasons.append("RSI asiri satima yakin")
-    elif current_rsi > 70:
-        score -= 1
-        reasons.append("RSI asiri alim")
-    elif current_rsi < 45:
-        score -= 1
-        reasons.append("RSI zayif")
+    # =========================
 
+    if 45 <= rsi14 <= 68:
+        score_long += 1
+        long_reasons.append("RSI long bölgesinde")
+
+    if 32 <= rsi14 <= 55:
+        score_short += 1
+        short_reasons.append("RSI short bölgesinde")
+
+    # =========================
     # MACD
-    if macd_value > macd_signal:
-        score += 1
-        reasons.append("MACD pozitif")
-    else:
-        score -= 1
-        reasons.append("MACD negatif")
+    # =========================
 
+    if macd_value is not None:
+
+        if macd_hist > 0:
+            score_long += 1
+            long_reasons.append("MACD pozitif")
+
+        if macd_hist < 0:
+            score_short += 1
+            short_reasons.append("MACD negatif")
+
+    # =========================
     # VOLUME
-    if vol_ratio >= 1.5:
-        if score > 0:
-            score += 1
-            reasons.append("Yuksek hacim")
-        elif score < 0:
-            score -= 1
-            reasons.append("Yuksek satis hacmi")
-        else:
-            reasons.append("Yuksek hacim")
-    else:
-        reasons.append("Hacim normal")
+    # =========================
 
-    # TREND
-    if price > ema20 and ema20 > ema50:
-        trend = "YUKSELIS"
-    elif price < ema20 and ema20 < ema50:
-        trend = "DUSUS"
-    else:
-        trend = "KARARSIZ"
+    if volume_ratio >= 1.2:
+        score_long += 1
+        score_short += 1
 
-    # MOMENTUM
-    if current_rsi >= 70:
-        momentum = "ASIRI ALIM"
-    elif current_rsi <= 30:
-        momentum = "ASIRI SATIM"
-    elif current_rsi >= 55:
-        momentum = "GUCLU"
-    elif current_rsi <= 45:
-        momentum = "ZAYIF"
-    else:
-        momentum = "NOTR"
+        long_reasons.append("Hacim güçlü")
+        short_reasons.append("Hacim güçlü")
 
-    # SUPPORT DISTANCE
-    support_distance = ((price - support) / price) * 100
+    # =========================
+    # SETUP CALCULATION
+    # =========================
 
-    # RESISTANCE DISTANCE
-    resistance_distance = ((resistance - price) / price) * 100
+    long_entry = price
+    long_stop = min(
+        support - atr14 * 0.25,
+        price - atr14 * 1.2
+    )
 
+    long_risk = long_entry - long_stop
+
+    long_tp1 = long_entry + long_risk * 1.5
+    long_tp2 = long_entry + long_risk * 2.5
+
+    long_rr = (
+        (long_tp2 - long_entry) / long_risk
+        if long_risk > 0 else 0
+    )
+
+    short_entry = price
+
+    short_stop = max(
+        resistance + atr14 * 0.25,
+        price + atr14 * 1.2
+    )
+
+    short_risk = short_stop - short_entry
+
+    short_tp1 = short_entry - short_risk * 1.5
+    short_tp2 = short_entry - short_risk * 2.5
+
+    short_rr = (
+        (short_entry - short_tp2) / short_risk
+        if short_risk > 0 else 0
+    )
+
+    # =========================
     # SIGNAL
-    if score >= 4:
-        signal = "AL"
-    elif score <= -4:
-        signal = "SAT"
+    # =========================
+
+    if score_long >= 4 and long_rr >= 2:
+        signal = "LONG"
+        score = score_long
+        entry = long_entry
+        stop = long_stop
+        tp1 = long_tp1
+        tp2 = long_tp2
+        rr = long_rr
+        reasons = long_reasons
+
+    elif score_short >= 4 and short_rr >= 2:
+        signal = "SHORT"
+        score = score_short
+        entry = short_entry
+        stop = short_stop
+        tp1 = short_tp1
+        tp2 = short_tp2
+        rr = short_rr
+        reasons = short_reasons
+
     else:
         signal = "BEKLE"
 
-    # HEURISTIC CONFIDENCE
-    confidence = int(min(95, 50 + abs(score) * 10))
-
-    # RISK / REWARD
-    long_stop = support - current_atr
-    long_target = resistance
-
-    if price > long_stop:
-        long_risk = price - long_stop
-        long_reward = long_target - price
-
-        if long_risk > 0:
-            long_rr = long_reward / long_risk
+        if score_long >= score_short:
+            score = score_long
+            reasons = long_reasons
         else:
-            long_rr = 0
-    else:
-        long_rr = 0
+            score = score_short
+            reasons = short_reasons
+
+        entry = price
+        stop = 0
+        tp1 = 0
+        tp2 = 0
+        rr = 0
+
+    confidence = min(95, 40 + score * 10)
 
     return {
         "symbol": symbol.replace("USDT", ""),
         "price": price,
         "ema20": ema20,
         "ema50": ema50,
-        "rsi": current_rsi,
+        "rsi": rsi14,
         "macd": macd_value,
-        "macd_signal": macd_signal,
-        "atr": current_atr,
-        "volume_ratio": vol_ratio,
+        "macd_hist": macd_hist,
+        "volume_ratio": volume_ratio,
+        "atr": atr14,
         "support": support,
         "resistance": resistance,
-        "support_distance": support_distance,
-        "resistance_distance": resistance_distance,
-        "trend": trend,
-        "momentum": momentum,
-        "score": score,
         "signal": signal,
+        "score": score,
         "confidence": confidence,
-        "long_rr": long_rr,
+        "entry": entry,
+        "stop": stop,
+        "tp1": tp1,
+        "tp2": tp2,
+        "rr": rr,
         "reasons": reasons
     }
 
 
-print("=" * 60)
-print("CRYPTO RESEARCH AGENT")
-print("=" * 60)
-print("BINANCE 1H MULTI-FACTOR ANALYSIS")
-print("=" * 60)
+def format_price(value):
+    if value >= 100:
+        return f"${value:,.2f}"
 
-results = []
+    if value >= 1:
+        return f"${value:.4f}"
 
-for symbol in COINS:
+    if value >= 0.01:
+        return f"${value:.6f}"
 
-    try:
-        result = analyze(symbol)
-        results.append(result)
+    return f"${value:.8f}"
 
+
+def print_analysis(result):
+    print()
+    print("=" * 55)
+    print(result["symbol"])
+    print("=" * 55)
+
+    print(f"Fiyat        : {format_price(result['price'])}")
+    print(f"EMA20        : {format_price(result['ema20'])}")
+    print(f"EMA50        : {format_price(result['ema50'])}")
+    print(f"RSI14        : {result['rsi']:.2f}")
+
+    if result["macd"] is not None:
+        print(f"MACD         : {result['macd']:.8f}")
+        print(f"MACD Hist    : {result['macd_hist']:.8f}")
+
+    print(f"Hacim Orani  : {result['volume_ratio']:.2f}x")
+    print(f"Destek       : {format_price(result['support'])}")
+    print(f"Direnc       : {format_price(result['resistance'])}")
+
+    print()
+    print(f"Sinyal       : {result['signal']}")
+    print(f"Skor         : {result['score']}/5")
+    print(f"Guven        : %{result['confidence']:.0f}")
+
+    if result["signal"] != "BEKLE":
         print()
-        print("=" * 60)
-        print(result["symbol"])
-        print("=" * 60)
+        print(f"Giris        : {format_price(result['entry'])}")
+        print(f"Stop         : {format_price(result['stop'])}")
+        print(f"TP1          : {format_price(result['tp1'])}")
+        print(f"TP2          : {format_price(result['tp2'])}")
+        print(f"R/R          : {result['rr']:.2f}")
 
-        print(f"Fiyat       : ${result['price']:,.6f}")
-        print(f"EMA20       : ${result['ema20']:,.6f}")
-        print(f"EMA50       : ${result['ema50']:,.6f}")
-        print(f"RSI14       : {result['rsi']:.2f}")
-        print(f"MACD        : {result['macd']:.6f}")
-        print(f"MACD Signal : {result['macd_signal']:.6f}")
-
-        print(f"Hacim Orani : {result['volume_ratio']:.2f}x")
-        print(f"ATR14       : ${result['atr']:,.6f}")
-
-        print(f"Destek      : ${result['support']:,.6f}")
-        print(f"Direnc      : ${result['resistance']:,.6f}")
-
-        print(f"Trend       : {result['trend']}")
-        print(f"Momentum    : {result['momentum']}")
-
-        print(f"Skor        : {result['score']}/5")
-        print(f"Sinyal      : {result['signal']}")
-        print(f"Guven       : %{result['confidence']}")
-        print(f"Long R/R    : {result['long_rr']:.2f}")
-
+    if result["reasons"]:
         print()
         print("Nedenler:")
 
         for reason in result["reasons"]:
             print(f"- {reason}")
 
-    except Exception as e:
 
-        print()
-        print(symbol.replace("USDT", ""))
-        print(f"VERI ALMA HATASI: {e}")
+def get_market_symbols():
+    data = get_json("/api/v3/ticker/24hr")
 
+    symbols = []
 
-print()
-print("=" * 60)
-print("SINYAL OZETI")
-print("=" * 60)
+    for item in data:
 
-for result in results:
+        symbol = item.get("symbol", "")
 
-    print(
-        f"{result['symbol']:6} "
-        f"{result['signal']:6} "
-        f"Skor: {result['score']:>2}/5  "
-        f"RSI: {result['rsi']:>5.1f}  "
-        f"Trend: {result['trend']:9}  "
-        f"Guven: %{result['confidence']}"
+        if not symbol.endswith("USDT"):
+            continue
+
+        if not symbol.isalnum():
+            continue
+
+        try:
+            quote_volume = float(item.get("quoteVolume", 0))
+        except:
+            continue
+
+        if quote_volume < MIN_QUOTE_VOLUME:
+            continue
+
+        symbols.append(
+            (
+                symbol,
+                quote_volume
+            )
+        )
+
+    symbols.sort(
+        key=lambda x: x[1],
+        reverse=True
     )
 
-print("=" * 60)
+    return [x[0] for x in symbols[:SCAN_LIMIT]]
+
+
+def main():
+
+    print()
+    print("=" * 60)
+    print("        CRYPTO RESEARCH AGENT")
+    print("=" * 60)
+
+    print()
+    print("BINANCE 1H TECHNICAL ANALYSIS")
+    print()
+
+    results = []
+
+    # =========================================
+    # WATCHLIST
+    # =========================================
+
+    print("Takip listesi analiz ediliyor...")
+
+    for symbol in WATCHLIST:
+
+        try:
+
+            data = get_klines(symbol)
+
+            result = analyze(symbol, data)
+
+            results.append(result)
+
+            print_analysis(result)
+
+            time.sleep(0.25)
+
+        except Exception as e:
+
+            print()
+            print(symbol)
+            print(f"VERI ALMA HATASI: {e}")
+
+    # =========================================
+    # MARKET SCAN
+    # =========================================
+
+    print()
+    print()
+    print("=" * 60)
+    print("        PIYASA FIRSAT TARAMASI")
+    print("=" * 60)
+
+    try:
+
+        market_symbols = get_market_symbols()
+
+        print(
+            f"{len(market_symbols)} likit USDT paritesi taranacak."
+        )
+
+        for symbol in market_symbols:
+
+            if symbol in WATCHLIST:
+                continue
+
+            try:
+
+                data = get_klines(symbol)
+
+                result = analyze(symbol, data)
+
+                results.append(result)
+
+                time.sleep(0.25)
+
+            except Exception:
+                continue
+
+    except Exception as e:
+
+        print(f"Piyasa tarama hatasi: {e}")
+
+    # =========================================
+    # OPPORTUNITIES
+    # =========================================
+
+    opportunities = [
+        r for r in results
+        if r["signal"] in ("LONG", "SHORT")
+    ]
+
+    opportunities.sort(
+        key=lambda x: (
+            x["score"],
+            x["rr"],
+            x["confidence"]
+        ),
+        reverse=True
+    )
+
+    print()
+    print()
+    print("=" * 60)
+    print("             EN IYI FIRSATLAR")
+    print("=" * 60)
+
+    if not opportunities:
+
+        print()
+        print("SU ANDA KALITELI TRADE FIRSATI YOK.")
+        print("BEKLE.")
+
+    else:
+
+        for i, result in enumerate(
+            opportunities[:10],
+            start=1
+        ):
+
+            print()
+            print(
+                f"{i}. {result['symbol']} "
+                f"{result['signal']}"
+            )
+
+            print(
+                f"   Skor      : "
+                f"{result['score']}/5"
+            )
+
+            print(
+                f"   Guven     : "
+                f"%{result['confidence']:.0f}"
+            )
+
+            print(
+                f"   Giris     : "
+                f"{format_price(result['entry'])}"
+            )
+
+            print(
+                f"   Stop      : "
+                f"{format_price(result['stop'])}"
+            )
+
+            print(
+                f"   TP1       : "
+                f"{format_price(result['tp1'])}"
+            )
+
+            print(
+                f"   TP2       : "
+                f"{format_price(result['tp2'])}"
+            )
+
+            print(
+                f"   R/R       : "
+                f"{result['rr']:.2f}"
+            )
+
+            print("   Neden:")
+
+            for reason in result["reasons"]:
+                print(f"   - {reason}")
+
+    # =========================================
+    # WATCHLIST SUMMARY
+    # =========================================
+
+    print()
+    print()
+    print("=" * 60)
+    print("              TAKIP LISTESI")
+    print("=" * 60)
+
+    watch_results = [
+        r for r in results
+        if r["symbol"] + "USDT" in WATCHLIST
+    ]
+
+    for result in watch_results:
+
+        print(
+            f"{result['symbol']:6} "
+            f"{result['signal']:6} "
+            f"{result['score']}/5 "
+            f"RSI:{result['rsi']:.1f}"
+        )
+
+    print()
+    print("=" * 60)
+    print("ANALIZ TAMAMLANDI")
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    main()
