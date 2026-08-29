@@ -246,13 +246,9 @@ def analyze_symbol(
 ):
 
     print()
-    print(
-        f"[ANALYZE] {symbol}"
-    )
+    print(f"[ANALYZE] {symbol}")
 
-    data = load_data(
-        symbol
-    )
+    data = load_data(symbol)
 
     if not data:
         return []
@@ -263,92 +259,81 @@ def analyze_symbol(
     # FUTURES
     # ========================================================
 
-    try:
+    if FUTURES_ENABLED:
 
-       if FUTURES_ENABLED:
+        try:
 
-    df_1h = data.get(
-        "1h"
-    )
+            df_1h = data.get("1h")
 
-    if df_1h is not None:
+            if df_1h is not None:
 
-        signal = analyze_futures(
-            df=df_1h,
-            symbol=symbol,
-            btc_regime=btc_regime,
-        )
+                signal = analyze_futures(
+                    df=df_1h,
+                    symbol=symbol,
+                    btc_regime=btc_regime,
+                )
 
-        if signal:
-            signals.append(
-                signal
-            ) 
+                if signal:
+                    signals.append(signal)
 
-    except Exception as exc:
+        except Exception as exc:
 
-        print(
-            f"[FUTURES ERROR] "
-            f"{symbol}: {exc}"
-        )
+            print(
+                f"[FUTURES ERROR] "
+                f"{symbol}: {exc}"
+            )
 
     # ========================================================
     # SPOT
     # ========================================================
 
-    try:
+    if SPOT_ENABLED:
 
-        if SPOT_ENABLED:
+        try:
 
-    df_4h = data.get(
-        "4h"
-    )
+            df_4h = data.get("4h")
 
-    if df_4h is not None:
+            if df_4h is not None:
 
-        signal = analyze_spot(
-            df=df_4h,
-            symbol=symbol,
-            btc_regime=btc_regime,
-        )
+                signal = analyze_spot(
+                    df=df_4h,
+                    symbol=symbol,
+                    btc_regime=btc_regime,
+                )
 
-        if signal:
-            signals.append(
-                signal
+                if signal:
+                    signals.append(signal)
+
+        except Exception as exc:
+
+            print(
+                f"[SPOT ERROR] "
+                f"{symbol}: {exc}"
             )
-        
-
-    except Exception as exc:
-
-        print(
-            f"[SPOT ERROR] "
-            f"{symbol}: {exc}"
-        )
 
     # ========================================================
     # SCALPING
     # ========================================================
 
-    try:
+    if SCALPING_ENABLED:
 
-        if SCALPING_ENABLED:
+        try:
 
-    signal = analyze_scalping(
-        data=data,
-        symbol=symbol,
-        btc_regime=btc_regime,
-    )
+            signal = analyze_scalping(
+                data=data,
+                symbol=symbol,
+                btc_regime=btc_regime,
+            )
 
-    if signal:
-        signals.append(
-            signal
-        )
+            if signal:
+                signals.append(signal)
 
-    except Exception as exc:
+        except Exception as exc:
 
-        print(
-            f"[SCALPING ERROR] "
-            f"{symbol}: {exc}"
-        )
+            print(
+                f"[SCALPING ERROR] "
+                f"{symbol}: {exc}"
+            )
 
     return signals
 
