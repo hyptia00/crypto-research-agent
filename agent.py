@@ -1,34 +1,48 @@
 import json
 import urllib.request
+import urllib.parse
 
-COINS = {
-    "BTC": "bitcoin",
-    "ETH": "ethereum",
-    "SOL": "solana",
-    "BNB": "binancecoin",
-    "XRP": "ripple",
-    "DOT": "polkadot",
-    "NEAR": "near",
-    "JUP": "jupiter-exchange-solana",
-    "MOVR": "moonriver",
-    "TNSR": "tensor"
-}
+COINS = [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "BNBUSDT",
+    "XRPUSDT",
+    "DOTUSDT",
+    "NEARUSDT",
+    "JUPUSDT",
+    "MOVRUSDT",
+    "TNSRUSDT"
+]
+
+BINANCE_URL = "https://api.binance.com/api/v3/klines"
 
 
-def get_prices(coin_id):
-    url = (
-        f"https://api.coingecko.com/api/v3/coins/"
-        f"{coin_id}/market_chart?vs_currency=usd&days=30"
+def get_prices(symbol):
+    params = urllib.parse.urlencode({
+        "symbol": symbol,
+        "interval": "1h",
+        "limit": 200
+    })
+
+    url = BINANCE_URL + "?" + params
+
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Crypto-Research-Agent"
+        }
     )
 
-    with urllib.request.urlopen(url, timeout=20) as response:
+    with urllib.request.urlopen(request, timeout=20) as response:
         data = json.loads(response.read().decode())
 
-    return [x[1] for x in data["prices"]]
+    return [float(candle[4]) for candle in data]
 
 
 def ema(prices, period):
     multiplier = 2 / (period + 1)
+
     value = prices[0]
 
     for price in prices[1:]:
@@ -58,23 +72,51 @@ def rsi(prices, period=14):
         return 100
 
     rs = avg_gain / avg_loss
+
     return 100 - (100 / (1 + rs))
 
 
-def analyze(symbol, coin_id):
-    prices = get_prices(coin_id)
+def analyze(symbol):
+    prices = get_prices(symbol)
 
     price = prices[-1]
 
-    ema20 = ema(prices[-20:], 20)
-    ema50 = ema(prices[-50:], 50)
+    ema20 = ema(prices, 20)
+    ema50 = ema(prices, 50)
 
     current_rsi = rsi(prices)
 
-    ema12 = ema(prices[-12:], 12)
-    ema26 = ema(prices[-26:], 26)
+    ema12 = ema(prices, 12)
+    ema26 = ema(prices, 26)
+
     macd = ema12 - ema26
 
+    score = 0
+
+    # EMA trend
+    if price > ema20:
+        score += 1
+    else:
+        score -= 1
+
+    if ema20 > ema50:
+        score += 1
+    else:
+        score -= 1
+
+    # RSI
+    if current_rsi >= 55:
+        score += 1
+    elif current_rsi <= 45:
+        score -= 1
+
+    # MACD
+    if macd > 0:
+        score += 1
+    else:
+        score -= 1
+
+    # Trend
     if price > ema20 and ema20 > ema50:
         trend = "YUKSELIS"
     elif price < ema20 and ema20 < ema50:
@@ -82,44 +124,90 @@ def analyze(symbol, coin_id):
     else:
         trend = "KARARSIZ"
 
+    # Momentum
     if current_rsi >= 70:
         momentum = "ASIRI ALIM"
     elif current_rsi <= 30:
         momentum = "ASIRI SATIM"
-    elif current_rsi < 45:
-        momentum = "ZAYIF"
-    elif current_rsi > 55:
+    elif current_rsi >= 55:
         momentum = "GUCLU"
+    elif current_rsi <= 45:
+        momentum = "ZAYIF"
     else:
         momentum = "NOTR"
 
-    if macd > 0:
-        macd_signal = "POZITIF"
+    # Signal
+    if score >= 3:
+        signal = "AL"
+    elif score <= -3:
+        signal = "SAT"
     else:
-        macd_signal = "NEGATIF"
+        signal = "BEKLE"
 
-    print()
-    print("=" * 45)
-    print(symbol)
-    print("=" * 45)
-    print(f"Fiyat: ${price:,.4f}")
-    print(f"EMA20: ${ema20:,.4f}")
-    print(f"EMA50: ${ema50:,.4f}")
-    print(f"RSI14: {current_rsi:.2f}")
-    print(f"MACD: {macd:.6f}")
-    print(f"Trend: {trend}")
-    print(f"Momentum: {momentum}")
-    print(f"MACD Durumu: {macd_signal}")
+    return {
+        "symbol": symbol.replace("USDT", ""),
+        "price": price,
+        "ema20": ema20,
+        "ema50": ema50,
+        "rsi": current_rsi,
+        "macd": macd,
+        "trend": trend,
+        "momentum": momentum,
+        "score": score,
+        "signal": signal
+    }
 
 
-print("=" * 45)
+print("=" * 55)
 print("CRYPTO RESEARCH AGENT")
-print("=" * 45)
+print("=" * 55)
+print("BINANCE 1H TECHNICAL ANALYSIS")
+print("=" * 55)
 
-for symbol, coin_id in COINS.items():
+results = []
+
+for symbol in COINS:
+
     try:
-        analyze(symbol, coin_id)
-    except Exception as e:
+        result = analyze(symbol)
+        results.append(result)
+
         print()
-        print(symbol)
-        print("VERI ALMA HATASI:", e)
+        print(result["symbol"])
+        print("-" * 40)
+
+        print(f"Fiyat: ${result['price']:,.6f}")
+        print(f"EMA20: ${result['ema20']:,.6f}")
+        print(f"EMA50: ${result['ema50']:,.6f}")
+        print(f"RSI14: {result['rsi']:.2f}")
+        print(f"MACD: {result['macd']:.6f}")
+
+        print(f"Trend: {result['trend']}")
+        print(f"Momentum: {result['momentum']}")
+
+        print(f"SKOR: {result['score']}/4")
+        print(f"SINYAL: {result['signal']}")
+
+    except Exception as e:
+
+        print()
+        print(symbol.replace("USDT", ""))
+        print(f"VERI ALMA HATASI: {e}")
+
+
+print()
+print("=" * 55)
+print("SINYAL OZETI")
+print("=" * 55)
+
+for result in results:
+
+    print(
+        f"{result['symbol']:6} "
+        f"{result['signal']:6} "
+        f"Skor: {result['score']:>2}/4  "
+        f"RSI: {result['rsi']:>5.1f}  "
+        f"Trend: {result['trend']}"
+    )
+
+print("=" * 55)
