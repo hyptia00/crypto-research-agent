@@ -1,105 +1,64 @@
 # ============================================================
-# SCALPING STRATEGY ENGINE
+# SCALPING ENGINE
 # 15M -> 5M -> 1M
 # ============================================================
-
-from typing import Any, Dict, Optional
 
 from market.indicators import calculate_indicators
 from market.structure import analyze_structure
 
 
-def _float(value, default=0.0):
+def _num(value, default=0.0):
     try:
         return float(value)
     except (TypeError, ValueError):
         return default
 
 
-def _indicator(df, names, default=0.0):
+def _prepare(df):
 
-    if df is None or len(df) == 0:
-        return default
-
-    for name in names:
-
-        if name in df.columns:
-
-            return _float(
-                df[name].iloc[-1],
-                default
-            )
-
-    return default
-
-
-def _trend(df):
-
-    if df is None or len(df) < 20:
-        return "UNKNOWN"
+    if df is None or len(df) < 30:
+        return None
 
     try:
-        data = calculate_indicators(df)
+        return calculate_indicators(df)
     except Exception:
-        data = df
-
-    price = _indicator(
-        data,
-        ["close"]
-    )
-
-    ema20 = _indicator(
-        data,
-        ["ema20", "EMA20"]
-    )
-
-    ema50 = _indicator(
-        data,
-        ["ema50", "EMA50"]
-    )
-
-    if price > ema20 > ema50:
-        return "BULLISH"
-
-    if price < ema20 < ema50:
-        return "BEARISH"
-
-    return "SIDEWAYS"
+        return df
 
 
-def _structure(df):
+def _analysis(df):
 
-    if df is None or len(df) < 20:
-        return {}
+    data = _prepare(df)
+
+    if data is None:
+        return None, {}
 
     try:
-        data = calculate_indicators(df)
-        return analyze_structure(data)
+        structure = analyze_structure(data)
     except Exception:
-        return {}
+        structure = {}
+
+    return data, structure
 
 
-def _structure_direction(
-    structure
-):
+def _trend(structure):
 
     trend = str(
         structure.get(
             "trend",
-            ""
+            "UNKNOWN"
         )
     ).upper()
 
     if trend in (
-        "UP",
         "BULLISH",
+        "UP",
         "LONG",
     ):
         return "LONG"
 
     if trend in (
-        "DOWN",
         "BEARISH",
+        "DOWN",
         "SHORT",
     ):
         return "SHORT"
@@ -107,23 +66,21 @@ def _structure_direction(
     return "UNKNOWN"
 
 
-def _has_bullish_trigger(
-    structure
+def _last(
+    df,
+    column,
+    default=0.0
 ):
 
-    return (
-        structure.get("bos") is True
-        or structure.get("choch") is True
-    )
+    if df is None:
+        return default
 
+    if column not in df.columns:
+        return default
 
-def _has_bearish_trigger(
-    structure
-):
-
-    return (
-        structure.get("bos") is True
-        or structure.get("choch") is True
+    return _num(
+        df[column].iloc[-1],
+        default
     )
 
 
@@ -143,11 +100,11 @@ def _levels(
         )
 
         tp1 = price + (
-            atr * 1.8
+            atr * 1.5
         )
 
         tp2 = price + (
-            atr * 2.5
+            atr * 2.4
         )
 
     else:
@@ -157,23 +114,33 @@ def _levels(
         )
 
         tp1 = price - (
-            atr * 1.8
+            atr * 1.5
         )
 
         tp2 = price - (
-            atr * 2.5
+            atr * 2.4
         )
 
     return stop, tp1, tp2
 
 
+# ============================================================
+# MAIN
+# ============================================================
+
 def analyze_scalping(
-    data: Dict[str, Any],
-    symbol: str,
-    btc_regime: Optional[str] = None,
+    data,
+    symbol,
+    btc_regime=None,
 ):
 
-    symbol = symbol.upper()
+    symbol = str(
+        symbol
+    ).upper()
+
+    # --------------------------------------------------------
+    # TIMEFRAMES
+    # --------------------------------------------------------
 
     df15 = data.get("15m")
     df5 = data.get("5m")
@@ -188,22 +155,41 @@ def analyze_scalping(
         return {
             "symbol": symbol,
             "direction": "WAIT",
+            "action": "NO_TRADE",
             "strategy": "SCALPING",
             "score": 0,
             "confidence": 0,
             "reason":
-                "MISSING_TIMEFRAMES",
+                "MISSING_TIMEFRAME",
         }
 
+    # ========================================================
+    # 15M
+    # DIRECTION / MARKET STRUCTURE
+    # ========================================================
+
+    data15, s15 = _analysis(
+        df15
+    )
+
+    data5, s5 = _analysis(
+        df5
+    )
+
+    data1, s1 = _analysis(
+        df1
+    )
+
     if (
-        len(df15) < 50
-        or len(df5) < 50
-        or len(df1) < 50
+        data15 is None
+        or data5 is None
+        or data1 is None
     ):
 
         return {
             "symbol": symbol,
             "direction": "WAIT",
+            "action": "NO_TRADE",
             "strategy": "SCALPING",
             "score": 0,
             "confidence": 0,
@@ -211,159 +197,737 @@ def analyze_scalping(
                 "INSUFFICIENT_DATA",
         }
 
-    # ========================================================
-    # 15M — DIRECTION
-    # ========================================================
-
-    trend15 = _trend(df15)
-
-    structure15 = _structure(df15)
-
-    direction15 = _structure_direction(
-        structure15
+    direction15 = _trend(
+        s15
     )
 
-    if trend15 == "BULLISH":
+    direction5 = _trend(
+        s5
+    )
 
-        direction = "LONG"
+    direction1 = _trend(
+        s1
+    )
 
-    elif trend15 == "BEARISH":
-
-        direction = "SHORT"
-
-    else:
-
-        return {
-            "symbol": symbol,
-            "direction": "WAIT",
-            "strategy": "SCALPING",
-            "score": 0,
-            "confidence": 0,
-            "reason":
-                "15M_SIDEWAYS",
-        }
-
-    # 15M structure ters ise işlem yok.
-    if (
-        direction15 != "UNKNOWN"
-        and direction15 != direction
-    ):
+    # 15M ana yön vermiyorsa işlem yok.
+    if direction15 == "UNKNOWN":
 
         return {
             "symbol": symbol,
             "direction": "WAIT",
+            "action": "NO_TRADE",
             "strategy": "SCALPING",
             "score": 0,
             "confidence": 0,
             "reason":
-                "15M_STRUCTURE_CONFLICT",
+                "15M_NO_DIRECTION",
         }
+
+    direction = direction15
 
     score = 0
     reasons = []
 
+    # ========================================================
+    # 15M CONFIRMATION
+    # ========================================================
+
     score += 2
 
     reasons.append(
-        f"15M direction = {direction}"
-    )
-
-    # --------------------------------------------------------
-    # 15M BOS / CHOCH
-    # --------------------------------------------------------
-
-    if structure15.get("bos"):
-
-        score += 2
-
-        reasons.append(
-            "15M BOS"
-        )
-
-    if structure15.get("choch"):
-
-        score += 2
-
-        reasons.append(
-            "15M CHoCH"
-        )
-
-    # ========================================================
-    # 5M — SETUP
-    # ========================================================
-
-    trend5 = _trend(df5)
-
-    structure5 = _structure(df5)
-
-    direction5 = _structure_direction(
-        structure5
+        f"15M direction: {direction15}"
     )
 
     if direction == "LONG":
 
-        if trend5 != "BULLISH":
+        if s15.get(
+            "bullish_bos"
+        ):
 
-            return {
-                "symbol": symbol,
-                "direction": "WAIT",
-                "strategy": "SCALPING",
-                "score": score,
-                "confidence": 0,
-                "reason":
-                    "5M_NOT_ALIGNED",
-            }
+            score += 2
+
+            reasons.append(
+                "15M bullish BOS"
+            )
+
+        if s15.get(
+            "bullish_msb"
+        ):
+
+            score += 3
+
+            reasons.append(
+                "15M bullish MSB"
+            )
+
+        if s15.get(
+            "bullish_choch"
+        ):
+
+            score += 2
+
+            reasons.append(
+                "15M bullish CHoCH"
+            )
+
+        if s15.get(
+            "bullish_sweep"
+        ):
+
+            score += 2
+
+            reasons.append(
+                "15M sell-side sweep"
+            )
 
     else:
 
-        if trend5 != "BEARISH":
+        if s15.get(
+            "bearish_bos"
+        ):
 
-            return {
-                "symbol": symbol,
-                "direction": "WAIT",
-                "strategy": "SCALPING",
-                "score": score,
-                "confidence": 0,
-                "reason":
-                    "5M_NOT_ALIGNED",
-            }
+            score += 2
+
+            reasons.append(
+                "15M bearish BOS"
+            )
+
+        if s15.get(
+            "bearish_msb"
+        ):
+
+            score += 3
+
+            reasons.append(
+                "15M bearish MSB"
+            )
+
+        if s15.get(
+            "bearish_choch"
+        ):
+
+            score += 2
+
+            reasons.append(
+                "15M bearish CHoCH"
+            )
+
+        if s15.get(
+            "bearish_sweep"
+        ):
+
+            score += 2
+
+            reasons.append(
+                "15M buy-side sweep"
+            )
+
+    # ========================================================
+    # 5M SETUP
+    # ========================================================
+
+    if direction5 != direction:
+
+        return {
+            "symbol": symbol,
+            "direction": "WAIT",
+            "action": "NO_TRADE",
+            "strategy": "SCALPING",
+            "score": score,
+            "confidence": 0,
+            "reason":
+                "5M_DIRECTION_MISMATCH",
+        }
 
     score += 2
 
     reasons.append(
-        "5M trend aligned"
+        "5M aligned"
     )
 
-    if (
-        direction5 != "UNKNOWN"
-        and direction5 == direction
-    ):
+    if direction == "LONG":
+
+        if s5.get(
+            "bullish_bos"
+        ):
+
+            score += 2
+
+            reasons.append(
+                "5M bullish BOS"
+            )
+
+        if s5.get(
+            "bullish_msb"
+        ):
+
+            score += 3
+
+            reasons.append(
+                "5M bullish MSB"
+            )
+
+        if s5.get(
+            "bullish_choch"
+        ):
+
+            score += 2
+
+            reasons.append(
+                "5M bullish CHoCH"
+            )
+
+        if s5.get(
+            "bullish_sweep"
+        ):
+
+            score += 3
+
+            reasons.append(
+                "5M sell-side sweep"
+            )
+
+    else:
+
+        if s5.get(
+            "bearish_bos"
+        ):
+
+            score += 2
+
+            reasons.append(
+                "5M bearish BOS"
+            )
+
+        if s5.get(
+            "bearish_msb"
+        ):
+
+            score += 3
+
+            reasons.append(
+                "5M bearish MSB"
+            )
+
+        if s5.get(
+            "bearish_choch"
+        ):
+
+            score += 2
+
+            reasons.append(
+                "5M bearish CHoCH"
+            )
+
+        if s5.get(
+            "bearish_sweep"
+        ):
+
+            score += 3
+
+            reasons.append(
+                "5M buy-side sweep"
+            )
+
+    # ========================================================
+    # 1M ENTRY TRIGGER
+    # ========================================================
+
+    if direction1 != direction:
+
+        return {
+            "symbol": symbol,
+            "direction": "WAIT",
+            "action": "NO_TRADE",
+            "strategy": "SCALPING",
+            "score": score,
+            "confidence": 0,
+            "reason":
+                "1M_DIRECTION_MISMATCH",
+        }
+
+    score += 2
+
+    reasons.append(
+        "1M aligned"
+    )
+
+    trigger = False
+
+    if direction == "LONG":
+
+        if s1.get(
+            "bullish_bos"
+        ):
+
+            trigger = True
+
+            score += 3
+
+            reasons.append(
+                "1M bullish BOS trigger"
+            )
+
+        if s1.get(
+            "bullish_msb"
+        ):
+
+            trigger = True
+
+            score += 3
+
+            reasons.append(
+                "1M bullish MSB trigger"
+            )
+
+        if s1.get(
+            "bullish_choch"
+        ):
+
+            trigger = True
+
+            score += 3
+
+            reasons.append(
+                "1M bullish CHoCH trigger"
+            )
+
+        if s1.get(
+            "bullish_sweep"
+        ):
+
+            trigger = True
+
+            score += 3
+
+            reasons.append(
+                "1M sell-side sweep"
+            )
+
+    else:
+
+        if s1.get(
+            "bearish_bos"
+        ):
+
+            trigger = True
+
+            score += 3
+
+            reasons.append(
+                "1M bearish BOS trigger"
+            )
+
+        if s1.get(
+            "bearish_msb"
+        ):
+
+            trigger = True
+
+            score += 3
+
+            reasons.append(
+                "1M bearish MSB trigger"
+            )
+
+        if s1.get(
+            "bearish_choch"
+        ):
+
+            trigger = True
+
+            score += 3
+
+            reasons.append(
+                "1M bearish CHoCH trigger"
+            )
+
+        if s1.get(
+            "bearish_sweep"
+        ):
+
+            trigger = True
+
+            score += 3
+
+            reasons.append(
+                "1M buy-side sweep"
+            )
+
+    # 1M'de trigger yoksa scalping işlemi yok.
+    if not trigger:
+
+        return {
+            "symbol": symbol,
+            "direction": "WAIT",
+            "action": "NO_TRADE",
+            "strategy": "SCALPING",
+            "score": score,
+            "confidence": 0,
+            "reason":
+                "NO_1M_STRUCTURE_TRIGGER",
+        }
+
+    # ========================================================
+    # 1M MOMENTUM
+    # ========================================================
+
+    rsi = _last(
+        data1,
+        "rsi"
+    )
+
+    macd_hist = _last(
+        data1,
+        "macd_hist"
+    )
+
+    volume_ratio = _last(
+        data1,
+        "volume_ratio",
+        1.0
+    )
+
+    if direction == "LONG":
+
+        if 45 <= rsi <= 70:
+
+            score += 1
+
+            reasons.append(
+                "1M RSI confirms LONG"
+            )
+
+        if macd_hist > 0:
+
+            score += 1
+
+            reasons.append(
+                "1M MACD confirms LONG"
+            )
+
+    else:
+
+        if 30 <= rsi <= 55:
+
+            score += 1
+
+            reasons.append(
+                "1M RSI confirms SHORT"
+            )
+
+        if macd_hist < 0:
+
+            score += 1
+
+            reasons.append(
+                "1M MACD confirms SHORT"
+            )
+
+    if volume_ratio >= 1.5:
 
         score += 2
 
         reasons.append(
-            "5M structure aligned"
-        )
-
-    # --------------------------------------------------------
-    # 5M STRUCTURE EVENT
-    # --------------------------------------------------------
-
-    if structure5.get("bos"):
-
-        score += 2
-
-        reasons.append(
-            "5M BOS setup"
-        )
-
-    if structure5.get("choch"):
-
-        score += 2
-
-        reasons.append(
-            "5M CHoCH setup"
+            "volume expansion"
         )
 
     # ========================================================
-    # 1M
+    # BTC REGIME
+    # ========================================================
+
+    regime = str(
+        btc_regime or "UNKNOWN"
+    ).upper()
+
+    if regime == direction:
+
+        score += 2
+
+        reasons.append(
+            "BTC regime aligned"
+        )
+
+    elif regime in (
+        "LONG",
+        "SHORT",
+    ):
+
+        score -= 3
+
+        reasons.append(
+            "BTC regime against trade"
+        )
+
+    # ========================================================
+    # MINIMUM SCORE
+    # ========================================================
+
+    if score < 10:
+
+        return {
+            "symbol": symbol,
+            "direction": "WAIT",
+            "action": "NO_TRADE",
+            "strategy": "SCALPING",
+            "score": score,
+            "confidence": 0,
+            "reason":
+                "SCALPING_SCORE_TOO_LOW",
+            "details": reasons,
+        }
+
+    # ========================================================
+    # PRICE / ATR
+    # ========================================================
+
+    price = _last(
+        data1,
+        "close"
+    )
+
+    atr = _last(
+        data1,
+        "atr"
+    )
+
+    if price <= 0:
+
+        return {
+            "symbol": symbol,
+            "direction": "WAIT",
+            "action": "NO_TRADE",
+            "strategy": "SCALPING",
+            "score": score,
+            "confidence": 0,
+            "reason":
+                "INVALID_PRICE",
+        }
+
+    stop, tp1, tp2 = _levels(
+        price,
+        atr,
+        direction
+    )
+
+    # ========================================================
+    # R/R
+    # ========================================================
+
+    risk = abs(
+        price - stop
+    )
+
+    reward = abs(
+        tp2 - price
+    )
+
+    if risk <= 0:
+
+        return {
+            "symbol": symbol,
+            "direction": "WAIT",
+            "action": "NO_TRADE",
+            "strategy": "SCALPING",
+            "score": score,
+            "confidence": 0,
+            "reason":
+                "INVALID_STOP",
+        }
+
+    rr = reward / risk
+
+    if rr < 1.5:
+
+        return {
+            "symbol": symbol,
+            "direction": "WAIT",
+            "action": "NO_TRADE",
+            "strategy": "SCALPING",
+            "score": score,
+            "confidence": 0,
+            "reason":
+                "SCALPING_RR_TOO_LOW",
+        }
+
+    # ========================================================
+    # CONFIDENCE
+    # ========================================================
+
+    confidence = min(
+        98,
+        50 + score * 3
+    )
+
+    # Üç timeframe aynı yönde
+    if (
+        direction15 == direction
+        and direction5 == direction
+        and direction1 == direction
+    ):
+
+        confidence += 5
+
+    confidence = min(
+        99,
+        confidence
+    )
+
+    # ========================================================
+    # RESULT
+    # ========================================================
+
+    return {
+
+        "symbol":
+            symbol,
+
+        "direction":
+            direction,
+
+        "action":
+            direction,
+
+        "strategy":
+            "SCALPING",
+
+        "timeframe":
+            "15M > 5M > 1M",
+
+        "score":
+            score,
+
+        "confidence":
+            round(
+                confidence,
+                1
+            ),
+
+        "entry":
+            price,
+
+        "price":
+            price,
+
+        "stop":
+            stop,
+
+        "tp1":
+            tp1,
+
+        "tp2":
+            tp2,
+
+        "rr":
+            round(
+                rr,
+                2
+            ),
+
+        "btc_regime":
+            regime,
+
+        "trend15":
+            direction15,
+
+        "trend5":
+            direction5,
+
+        "trend1":
+            direction1,
+
+        "rsi":
+            rsi,
+
+        "macd_hist":
+            macd_hist,
+
+        "volume_ratio":
+            volume_ratio,
+
+        "atr":
+            atr,
+
+        "msb":
+            bool(
+                s15.get("msb")
+                or s5.get("msb")
+                or s1.get("msb")
+            ),
+
+        "choch":
+            bool(
+                s15.get("choch")
+                or s5.get("choch")
+                or s1.get("choch")
+            ),
+
+        "liquidity_sweep":
+            bool(
+                s15.get("liquidity_sweep")
+                or s5.get("liquidity_sweep")
+                or s1.get("liquidity_sweep")
+            ),
+
+        "fvg":
+            s5.get("fvg")
+            or s1.get("fvg"),
+
+        "reasons":
+            reasons,
+
+        "execution_mode":
+            "PAPER",
+
+    }
+
+
+def scan_scalping(
+    market_data,
+    btc_regime=None,
+):
+
+    results = []
+
+    for symbol, data in (
+        market_data or {}
+    ).items():
+
+        try:
+
+            results.append(
+                analyze_scalping(
+                    data=data,
+                    symbol=symbol,
+                    btc_regime=btc_regime,
+                )
+            )
+
+        except Exception as exc:
+
+            results.append({
+
+                "symbol":
+                    symbol,
+
+                "direction":
+                    "WAIT",
+
+                "action":
+                    "NO_TRADE",
+
+                "strategy":
+                    "SCALPING",
+
+                "score":
+                    0,
+
+                "confidence":
+                    0,
+
+                "reason":
+                    f"ANALYSIS_ERROR: {exc}",
+
+            })
+
+    return results
