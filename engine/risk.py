@@ -1,665 +1,362 @@
 # ============================================================
-# CRYPTO RESEARCH AGENT
-# RISK ENGINE
+# RISK FILTER ENGINE
 # ============================================================
 
-from config import (
-    MAX_RISK_PERCENT,
-    MIN_RR,
-)
+from typing import Any, Dict, Optional
 
 
-# ============================================================
-# SETTINGS
-# ============================================================
-
-MAX_POSITION_PERCENT = 100.0
-
-MAX_STOP_DISTANCE_PERCENT = 10.0
-
-MIN_STOP_DISTANCE_PERCENT = 0.10
-
-
-# ============================================================
-# HELPERS
-# ============================================================
-
-def _number(value, default=None):
-
+def _float(value, default=0.0):
     try:
         return float(value)
-
-    except (
-        TypeError,
-        ValueError,
-    ):
-
+    except (TypeError, ValueError):
         return default
 
 
-# ============================================================
-# RISK DISTANCE
-# ============================================================
+def _direction(signal: Dict[str, Any]) -> str:
+    direction = str(
+        signal.get(
+            "direction",
+            signal.get("side", "")
+        )
+    ).upper()
 
-def calculate_risk_distance(
-    entry,
-    stop,
-):
+    if direction == "BUY":
+        return "LONG"
 
-    entry = _number(entry)
-    stop = _number(stop)
+    if direction == "SELL":
+        return "SHORT"
 
-    if entry is None or stop is None:
-        return None
-
-    return abs(
-        entry - stop
-    )
+    return direction
 
 
-def calculate_risk_percent(
-    entry,
-    stop,
-):
+def calculate_risk_reward(
+    entry: float,
+    stop: float,
+    target: float,
+    direction: str,
+) -> float:
 
-    entry = _number(entry)
-    stop = _number(stop)
+    entry = _float(entry)
+    stop = _float(stop)
+    target = _float(target)
 
-    if (
-        entry is None
-        or stop is None
-        or entry <= 0
-    ):
-        return None
+    if entry <= 0 or stop <= 0 or target <= 0:
+        return 0.0
 
-    return (
-        abs(entry - stop)
-        / entry
-    ) * 100
+    direction = direction.upper()
 
+    if direction == "LONG":
 
-# ============================================================
-# R/R
-# ============================================================
+        risk = entry - stop
+        reward = target - entry
 
-def calculate_rr(
-    entry,
-    stop,
-    target,
-):
+    elif direction == "SHORT":
 
-    entry = _number(entry)
-    stop = _number(stop)
-    target = _number(target)
+        risk = stop - entry
+        reward = entry - target
 
-    if (
-        entry is None
-        or stop is None
-        or target is None
-    ):
-        return None
-
-    risk = abs(
-        entry - stop
-    )
-
-    reward = abs(
-        target - entry
-    )
+    else:
+        return 0.0
 
     if risk <= 0:
-        return None
+        return 0.0
 
     return reward / risk
 
 
-# ============================================================
-# POSITION SIZE
-# ============================================================
+def validate_signal(
+    signal: Dict[str, Any],
+    btc_regime: Optional[str] = None,
+    min_confidence: float = 65.0,
+    min_rr: float = 1.8,
+) -> Dict[str, Any]:
 
-def calculate_position_size(
-    balance,
-    entry,
-    stop,
-    risk_percent=None,
-):
+    if not isinstance(signal, dict):
 
-    balance = _number(balance)
-    entry = _number(entry)
-    stop = _number(stop)
+        return {
+            "approved": False,
+            "reason": "INVALID_SIGNAL",
+        }
 
-    if (
-        balance is None
-        or entry is None
-        or stop is None
-        or balance <= 0
-        or entry <= 0
-    ):
-        return 0.0
+    symbol = str(
+        signal.get("symbol", "")
+    ).upper()
 
-    if risk_percent is None:
-        risk_percent = MAX_RISK_PERCENT
+    direction = _direction(signal)
 
-    risk_percent = _number(
-        risk_percent,
-        MAX_RISK_PERCENT
-    )
-
-    if risk_percent <= 0:
-        return 0.0
-
-    risk_amount = (
-        balance
-        * risk_percent
-        / 100
-    )
-
-    stop_distance = abs(
-        entry - stop
-    )
-
-    if stop_distance <= 0:
-        return 0.0
-
-    quantity = (
-        risk_amount
-        / stop_distance
-    )
-
-    return quantity
-
-
-# ============================================================
-# NOTIONAL
-# ============================================================
-
-def calculate_notional(
-    quantity,
-    entry,
-):
-
-    quantity = _number(
-        quantity
-    )
-
-    entry = _number(
-        entry
-    )
-
-    if (
-        quantity is None
-        or entry is None
-    ):
-        return 0.0
-
-    return quantity * entry
-
-
-# ============================================================
-# POSITION PERCENT
-# ============================================================
-
-def calculate_position_percent(
-    balance,
-    notional,
-):
-
-    balance = _number(
-        balance
-    )
-
-    notional = _number(
-        notional
-    )
-
-    if (
-        balance is None
-        or notional is None
-        or balance <= 0
-    ):
-        return 0.0
-
-    return (
-        notional
-        / balance
-    ) * 100
-
-
-# ============================================================
-# VALIDATE DIRECTION
-# ============================================================
-
-def validate_direction(
-    signal
-):
-
-    side = signal.get(
-        "side"
-    )
-
-    entry = _number(
-        signal.get("entry")
-    )
-
-    stop = _number(
-        signal.get("stop")
-    )
-
-    tp1 = _number(
-        signal.get("tp1")
-    )
-
-    if (
-        entry is None
-        or stop is None
-        or tp1 is None
-    ):
-        return False
-
-    if side in (
-        "LONG",
-        "BUY",
-    ):
-
-        if stop >= entry:
-            return False
-
-        if tp1 <= entry:
-            return False
-
-        return True
-
-    if side == "SHORT":
-
-        if stop <= entry:
-            return False
-
-        if tp1 >= entry:
-            return False
-
-        return True
-
-    return False
-
-
-# ============================================================
-# VALIDATE RISK
-# ============================================================
-
-def validate_risk(
-    signal
-):
-
-    if not signal:
-        return False
-
-    if not validate_direction(
-        signal
-    ):
-        return False
-
-    entry = _number(
-        signal.get("entry")
-    )
-
-    stop = _number(
-        signal.get("stop")
-    )
-
-    tp1 = _number(
-        signal.get("tp1")
-    )
-
-    risk_percent = (
-        calculate_risk_percent(
-            entry,
-            stop
+    entry = _float(
+        signal.get(
+            "entry",
+            signal.get("price")
         )
     )
 
-    if risk_percent is None:
-        return False
-
-    # Çok dar SL
-    if risk_percent < MIN_STOP_DISTANCE_PERCENT:
-        return False
-
-    # Aşırı geniş SL
-    if risk_percent > MAX_STOP_DISTANCE_PERCENT:
-        return False
-
-    rr = calculate_rr(
-        entry,
-        stop,
-        tp1
-    )
-
-    if rr is None:
-        return False
-
-    if rr < MIN_RR:
-        return False
-
-    return True
-
-
-# ============================================================
-# BUILD RISK DATA
-# ============================================================
-
-def build_risk_data(
-    signal,
-    balance,
-):
-
-    entry = _number(
-        signal.get("entry")
-    )
-
-    stop = _number(
+    stop = _float(
         signal.get("stop")
     )
 
-    tp1 = _number(
+    tp1 = _float(
         signal.get("tp1")
     )
 
-    tp2 = _number(
+    tp2 = _float(
         signal.get("tp2")
     )
 
-    if (
-        entry is None
-        or stop is None
-    ):
-        return None
-
-    risk_distance = (
-        calculate_risk_distance(
-            entry,
-            stop
-        )
+    confidence = _float(
+        signal.get("confidence")
     )
 
-    risk_percent = (
-        calculate_risk_percent(
-            entry,
-            stop
-        )
+    score = _float(
+        signal.get("score")
     )
 
-    rr_tp1 = (
-        calculate_rr(
-            entry,
-            stop,
-            tp1
-        )
-        if tp1 is not None
-        else None
+    # --------------------------------------------------------
+    # BASIC VALIDATION
+    # --------------------------------------------------------
+
+    if not symbol:
+        return {
+            "approved": False,
+            "reason": "MISSING_SYMBOL",
+        }
+
+    if direction not in ("LONG", "SHORT"):
+        return {
+            "approved": False,
+            "reason": "INVALID_DIRECTION",
+            "symbol": symbol,
+        }
+
+    if entry <= 0:
+        return {
+            "approved": False,
+            "reason": "INVALID_ENTRY",
+            "symbol": symbol,
+        }
+
+    if stop <= 0:
+        return {
+            "approved": False,
+            "reason": "MISSING_STOP",
+            "symbol": symbol,
+        }
+
+    if tp1 <= 0 and tp2 <= 0:
+        return {
+            "approved": False,
+            "reason": "MISSING_TARGET",
+            "symbol": symbol,
+        }
+
+    # --------------------------------------------------------
+    # STOP LOCATION
+    # --------------------------------------------------------
+
+    if direction == "LONG" and stop >= entry:
+
+        return {
+            "approved": False,
+            "reason": "LONG_STOP_INVALID",
+            "symbol": symbol,
+        }
+
+    if direction == "SHORT" and stop <= entry:
+
+        return {
+            "approved": False,
+            "reason": "SHORT_STOP_INVALID",
+            "symbol": symbol,
+        }
+
+    # --------------------------------------------------------
+    # TARGET
+    # --------------------------------------------------------
+
+    target = tp2 if tp2 > 0 else tp1
+
+    if direction == "LONG" and target <= entry:
+
+        return {
+            "approved": False,
+            "reason": "LONG_TARGET_INVALID",
+            "symbol": symbol,
+        }
+
+    if direction == "SHORT" and target >= entry:
+
+        return {
+            "approved": False,
+            "reason": "SHORT_TARGET_INVALID",
+            "symbol": symbol,
+        }
+
+    # --------------------------------------------------------
+    # RISK / REWARD
+    # --------------------------------------------------------
+
+    rr = calculate_risk_reward(
+        entry,
+        stop,
+        target,
+        direction,
     )
 
-    rr_tp2 = (
-        calculate_rr(
-            entry,
-            stop,
-            tp2
-        )
-        if tp2 is not None
-        else None
-    )
+    if rr < min_rr:
 
-    quantity = (
-        calculate_position_size(
-            balance,
-            entry,
-            stop
-        )
-    )
+        return {
+            "approved": False,
+            "reason": "RR_TOO_LOW",
+            "symbol": symbol,
+            "rr": round(rr, 2),
+            "required_rr": min_rr,
+        }
 
-    notional = (
-        calculate_notional(
-            quantity,
-            entry
-        )
-    )
+    # --------------------------------------------------------
+    # CONFIDENCE
+    # --------------------------------------------------------
 
-    position_percent = (
-        calculate_position_percent(
-            balance,
-            notional
-        )
+    if confidence < min_confidence:
+
+        return {
+            "approved": False,
+            "reason": "CONFIDENCE_TOO_LOW",
+            "symbol": symbol,
+            "confidence": confidence,
+            "required_confidence":
+                min_confidence,
+        }
+
+    # --------------------------------------------------------
+    # BTC REGIME FILTER
+    # --------------------------------------------------------
+
+    regime = str(
+        btc_regime
+        or signal.get("btc_regime", "UNKNOWN")
+    ).upper()
+
+    # BTC LONG rejimdeyse SHORT için
+    # daha güçlü teyit gerekir.
+    if regime == "LONG" and direction == "SHORT":
+
+        if confidence < 75:
+
+            return {
+                "approved": False,
+                "reason":
+                    "BTC_REGIME_AGAINST_SHORT",
+                "symbol": symbol,
+                "confidence": confidence,
+                "btc_regime": regime,
+            }
+
+    # BTC SHORT rejimdeyse LONG için
+    # daha güçlü teyit gerekir.
+    if regime == "SHORT" and direction == "LONG":
+
+        if confidence < 75:
+
+            return {
+                "approved": False,
+                "reason":
+                    "BTC_REGIME_AGAINST_LONG",
+                "symbol": symbol,
+                "confidence": confidence,
+                "btc_regime": regime,
+            }
+
+    # --------------------------------------------------------
+    # APPROVED
+    # --------------------------------------------------------
+
+    result = dict(signal)
+
+    result["symbol"] = symbol
+    result["direction"] = direction
+    result["entry"] = entry
+    result["stop"] = stop
+    result["tp1"] = tp1
+    result["tp2"] = tp2
+    result["rr"] = round(rr, 2)
+    result["confidence"] = round(
+        confidence,
+        1
     )
+    result["risk_approved"] = True
+    result["btc_regime"] = regime
 
     return {
-
-        "balance":
-            balance,
-
-        "risk_percent":
-            risk_percent,
-
-        "risk_distance":
-            risk_distance,
-
-        "risk_amount":
-            balance
-            * MAX_RISK_PERCENT
-            / 100,
-
-        "quantity":
-            quantity,
-
-        "notional":
-            notional,
-
-        "position_percent":
-            position_percent,
-
-        "rr_tp1":
-            rr_tp1,
-
-        "rr_tp2":
-            rr_tp2,
-
+        "approved": True,
+        "reason": "RISK_CHECK_PASSED",
+        "signal": result,
     }
 
 
-# ============================================================
-# APPLY RISK
-# ============================================================
-
-def apply_risk(
-    signal,
-    balance,
+def filter_signals(
+    signals,
+    btc_regime: Optional[str] = None,
+    min_confidence: float = 65.0,
+    min_rr: float = 1.8,
 ):
 
-    """
-    Sinyali risk kontrolünden geçirir.
+    approved = []
+    rejected = []
 
-    Başarılıysa sinyale:
+    for signal in signals or []:
 
-        quantity
-        notional
-        risk_amount
-        risk_percent
-        R/R
-
-    ekler.
-    """
-
-    if not signal:
-        return None
-
-    if signal.get(
-        "side"
-    ) == "WAIT":
-
-        return None
-
-    if not validate_risk(
-        signal
-    ):
-
-        return None
-
-    risk_data = (
-        build_risk_data(
+        result = validate_signal(
             signal,
-            balance
+            btc_regime=btc_regime,
+            min_confidence=min_confidence,
+            min_rr=min_rr,
         )
-    )
 
-    if risk_data is None:
-        return None
+        if result["approved"]:
 
-    # --------------------------------------------------------
-    # MAX POSITION CHECK
-    # --------------------------------------------------------
+            approved.append(
+                result["signal"]
+            )
 
-    if (
-        risk_data[
-            "position_percent"
-        ]
-        > MAX_POSITION_PERCENT
-    ):
+        else:
 
-        return None
+            rejected.append(result)
 
-    result = dict(
-        signal
-    )
-
-    result[
-        "quantity"
-    ] = risk_data[
-        "quantity"
-    ]
-
-    result[
-        "notional"
-    ] = risk_data[
-        "notional"
-    ]
-
-    result[
-        "risk_amount"
-    ] = risk_data[
-        "risk_amount"
-    ]
-
-    result[
-        "risk_percent"
-    ] = risk_data[
-        "risk_percent"
-    ]
-
-    result[
-        "rr_tp1"
-    ] = risk_data[
-        "rr_tp1"
-    ]
-
-    result[
-        "rr_tp2"
-    ] = risk_data[
-        "rr_tp2"
-    ]
-
-    result[
-        "position_percent"
-    ] = risk_data[
-        "position_percent"
-    ]
-
-    result[
-        "risk_status"
-    ] = "APPROVED"
-
-    return result
+    return {
+        "approved": approved,
+        "rejected": rejected,
+    }
 
 
-# ============================================================
-# RISK REJECTION REASON
-# ============================================================
-
-def risk_rejection_reason(
-    signal
+def get_final_signal(
+    signals,
+    btc_regime: Optional[str] = None,
+    min_confidence: float = 65.0,
+    min_rr: float = 1.8,
 ):
 
-    if not signal:
-        return "SIGNAL_EMPTY"
-
-    if signal.get(
-        "side"
-    ) == "WAIT":
-
-        return "SIGNAL_WAIT"
-
-    if not validate_direction(
-        signal
-    ):
-
-        return "INVALID_DIRECTION_OR_LEVELS"
-
-    entry = _number(
-        signal.get("entry")
+    result = filter_signals(
+        signals,
+        btc_regime=btc_regime,
+        min_confidence=min_confidence,
+        min_rr=min_rr,
     )
 
-    stop = _number(
-        signal.get("stop")
+    if not result["approved"]:
+        return None
+
+    # En yüksek güven + RR kombinasyonu
+    ranked = sorted(
+        result["approved"],
+        key=lambda x: (
+            _float(
+                x.get("confidence")
+            ),
+            _float(
+                x.get("rr")
+            ),
+        ),
+        reverse=True,
     )
 
-    tp1 = _number(
-        signal.get("tp1")
-    )
-
-    risk_percent = (
-        calculate_risk_percent(
-            entry,
-            stop
-        )
-    )
-
-    if risk_percent is None:
-        return "INVALID_RISK"
-
-    if risk_percent < MIN_STOP_DISTANCE_PERCENT:
-        return "STOP_TOO_TIGHT"
-
-    if risk_percent > MAX_STOP_DISTANCE_PERCENT:
-        return "STOP_TOO_WIDE"
-
-    rr = calculate_rr(
-        entry,
-        stop,
-        tp1
-    )
-
-    if rr is None:
-        return "INVALID_RR"
-
-    if rr < MIN_RR:
-        return "RR_TOO_LOW"
-
-    return "UNKNOWN"
-
-
-# ============================================================
-# RISK REPORT
-# ============================================================
-
-def risk_report(
-    signal
-):
-
-    if not signal:
-        return "NO SIGNAL"
-
-    return (
-        f"Risk={signal.get('risk_percent', 0):.2f}% | "
-        f"Position={signal.get('position_percent', 0):.2f}% | "
-        f"Qty={signal.get('quantity', 0):.6f} | "
-        f"R/R TP1={signal.get('rr_tp1', 0):.2f} | "
-        f"R/R TP2={signal.get('rr_tp2', 0):.2f} | "
-        f"Status={signal.get('risk_status', 'N/A')}"
-    )
+    return ranked[0]
