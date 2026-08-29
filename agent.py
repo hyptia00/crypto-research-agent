@@ -2,6 +2,7 @@ import json
 import urllib.request
 import urllib.parse
 import time
+import math
 
 BASE_URL = "https://data-api.binance.vision"
 
@@ -19,15 +20,14 @@ WATCHLIST = [
 ]
 
 KLINE_LIMIT = 200
-SCAN_LIMIT = 40
+SCAN_LIMIT = 30
 MIN_QUOTE_VOLUME = 5_000_000
-
 
 # =========================================================
 # API
 # =========================================================
 
-def get_json(path, params=None, retries=3):
+def get_json(path, params=None, retries=5):
 
     if params:
         path += "?" + urllib.parse.urlencode(params)
@@ -41,13 +41,13 @@ def get_json(path, params=None, retries=3):
             request = urllib.request.Request(
                 url,
                 headers={
-                    "User-Agent": "CryptoResearchAgent/2.0"
+                    "User-Agent": "CryptoResearchAgent/3.0"
                 }
             )
 
             with urllib.request.urlopen(
                 request,
-                timeout=15
+                timeout=20
             ) as response:
 
                 return json.loads(
@@ -56,20 +56,39 @@ def get_json(path, params=None, retries=3):
 
         except Exception as e:
 
-            if attempt < retries - 1:
-                time.sleep(2 ** attempt)
+            message = str(e)
+
+            # Binance rate limit
+            if "429" in message:
+
+                wait_time = min(
+                    10 * (attempt + 1),
+                    60
+                )
+
+                print(
+                    f"   API limit. "
+                    f"{wait_time}s bekleniyor..."
+                )
+
+                time.sleep(wait_time)
+
             else:
-                raise e
+
+                if attempt < retries - 1:
+                    time.sleep(2 ** attempt)
+                else:
+                    raise e
 
 
-def get_klines(symbol, interval):
+def get_klines(symbol, interval, limit=KLINE_LIMIT):
 
     return get_json(
         "/api/v3/klines",
         {
             "symbol": symbol,
             "interval": interval,
-            "limit": KLINE_LIMIT
+            "limit": limit
         }
     )
 
@@ -85,11 +104,15 @@ def ema(values, period):
 
     multiplier = 2 / (period + 1)
 
-    result = sum(values[:period]) / period
+    result = sum(
+        values[:period]
+    ) / period
 
     for price in values[period:]:
+
         result = (
-            (price - result) * multiplier
+            (price - result)
+            * multiplier
             + result
         )
 
@@ -101,7 +124,9 @@ def sma(values, period):
     if len(values) < period:
         return None
 
-    return sum(values[-period:]) / period
+    return sum(
+        values[-period:]
+    ) / period
 
 
 def rsi(values, period=14):
@@ -114,23 +139,41 @@ def rsi(values, period=14):
 
     for i in range(1, len(values)):
 
-        change = values[i] - values[i - 1]
+        change = (
+            values[i]
+            - values[i - 1]
+        )
 
-        gains.append(max(change, 0))
-        losses.append(max(-change, 0))
+        gains.append(
+            max(change, 0)
+        )
 
-    avg_gain = sum(gains[:period]) / period
-    avg_loss = sum(losses[:period]) / period
+        losses.append(
+            max(-change, 0)
+        )
 
-    for i in range(period, len(gains)):
+    avg_gain = (
+        sum(gains[:period])
+        / period
+    )
+
+    avg_loss = (
+        sum(losses[:period])
+        / period
+    )
+
+    for i in range(
+        period,
+        len(gains)
+    ):
 
         avg_gain = (
-            (avg_gain * (period - 1))
+            avg_gain * (period - 1)
             + gains[i]
         ) / period
 
         avg_loss = (
-            (avg_loss * (period - 1))
+            avg_loss * (period - 1)
             + losses[i]
         ) / period
 
@@ -139,7 +182,9 @@ def rsi(values, period=14):
 
     rs = avg_gain / avg_loss
 
-    return 100 - (100 / (1 + rs))
+    return 100 - (
+        100 / (1 + rs)
+    )
 
 
 def macd(values):
@@ -153,8 +198,13 @@ def macd(values):
     multiplier12 = 2 / 13
     multiplier26 = 2 / 27
 
-    e12 = sum(values[:12]) / 12
-    e26 = sum(values[:26]) / 26
+    e12 = sum(
+        values[:12]
+    ) / 12
+
+    e26 = sum(
+        values[:26]
+    ) / 26
 
     for price in values[12:]:
 
@@ -184,30 +234,49 @@ def macd(values):
     for i in range(length):
 
         macd_values.append(
-            ema12_values[-length + i] - e26
+            ema12_values[-length + i]
+            - e26
         )
 
     if len(macd_values) < 9:
         return None, None, None
 
-    signal = ema(macd_values, 9)
+    signal = ema(
+        macd_values,
+        9
+    )
 
     if signal is None:
         return None, None, None
 
-    histogram = macd_values[-1] - signal
+    histogram = (
+        macd_values[-1]
+        - signal
+    )
 
-    return macd_values[-1], signal, histogram
+    return (
+        macd_values[-1],
+        signal,
+        histogram
+    )
 
 
-def atr(highs, lows, closes, period=14):
+def atr(
+    highs,
+    lows,
+    closes,
+    period=14
+):
 
     if len(closes) < period + 1:
         return None
 
     ranges = []
 
-    for i in range(1, len(closes)):
+    for i in range(
+        1,
+        len(closes)
+    ):
 
         value = max(
             highs[i] - lows[i],
@@ -223,7 +292,10 @@ def atr(highs, lows, closes, period=14):
 
         ranges.append(value)
 
-    return sum(ranges[-period:]) / period
+    return (
+        sum(ranges[-period:])
+        / period
+    )
 
 
 # =========================================================
@@ -232,11 +304,30 @@ def atr(highs, lows, closes, period=14):
 
 def parse_klines(data):
 
-    opens = [float(x[1]) for x in data]
-    highs = [float(x[2]) for x in data]
-    lows = [float(x[3]) for x in data]
-    closes = [float(x[4]) for x in data]
-    volumes = [float(x[5]) for x in data]
+    opens = [
+        float(x[1])
+        for x in data
+    ]
+
+    highs = [
+        float(x[2])
+        for x in data
+    ]
+
+    lows = [
+        float(x[3])
+        for x in data
+    ]
+
+    closes = [
+        float(x[4])
+        for x in data
+    ]
+
+    volumes = [
+        float(x[5])
+        for x in data
+    ]
 
     return (
         opens,
@@ -248,7 +339,7 @@ def parse_klines(data):
 
 
 # =========================================================
-# TREND ANALYSIS
+# TIMEFRAME ANALYSIS
 # =========================================================
 
 def timeframe_analysis(data):
@@ -263,14 +354,26 @@ def timeframe_analysis(data):
 
     price = closes[-1]
 
-    ema20 = ema(closes, 20)
-    ema50 = ema(closes, 50)
-
-    rsi14 = rsi(closes, 14)
-
-    macd_value, macd_signal, macd_hist = macd(
-        closes
+    ema20 = ema(
+        closes,
+        20
     )
+
+    ema50 = ema(
+        closes,
+        50
+    )
+
+    rsi14 = rsi(
+        closes,
+        14
+    )
+
+    (
+        macd_value,
+        macd_signal,
+        macd_hist
+    ) = macd(closes)
 
     atr14 = atr(
         highs,
@@ -278,11 +381,21 @@ def timeframe_analysis(data):
         closes
     )
 
-    if price > ema20 and ema20 > ema50:
+    if (
+        ema20
+        and ema50
+        and price > ema20
+        and ema20 > ema50
+    ):
 
         trend = "YUKSELIS"
 
-    elif price < ema20 and ema20 < ema50:
+    elif (
+        ema20
+        and ema50
+        and price < ema20
+        and ema20 < ema50
+    ):
 
         trend = "DUSUS"
 
@@ -300,6 +413,7 @@ def timeframe_analysis(data):
         "macd_hist": macd_hist,
         "atr": atr14,
         "trend": trend,
+        "opens": opens,
         "highs": highs,
         "lows": lows,
         "closes": closes,
@@ -314,9 +428,10 @@ def timeframe_analysis(data):
 def levels(info):
 
     price = info["price"]
+    atr_value = info["atr"]
 
-    lows = info["lows"][-50:]
-    highs = info["highs"][-50:]
+    lows = info["lows"][-60:]
+    highs = info["highs"][-60:]
 
     supports = [
         x for x in lows
@@ -329,16 +444,95 @@ def levels(info):
     ]
 
     if supports:
-        support = max(supports)
+
+        support = max(
+            supports
+        )
+
     else:
-        support = price - info["atr"] * 2
+
+        support = (
+            price
+            - atr_value * 2
+        )
 
     if resistances:
-        resistance = min(resistances)
-    else:
-        resistance = price + info["atr"] * 2
 
-    return support, resistance
+        resistance = min(
+            resistances
+        )
+
+    else:
+
+        resistance = (
+            price
+            + atr_value * 2
+        )
+
+    return (
+        support,
+        resistance
+    )
+
+
+# =========================================================
+# SWING STRUCTURE
+# =========================================================
+
+def swing_levels(info):
+
+    highs = info["highs"]
+    lows = info["lows"]
+
+    swing_highs = []
+    swing_lows = []
+
+    start = max(
+        2,
+        len(highs) - 60
+    )
+
+    end = len(highs) - 2
+
+    for i in range(
+        start,
+        end
+    ):
+
+        if (
+            highs[i] > highs[i - 1]
+            and highs[i] > highs[i + 1]
+        ):
+
+            swing_highs.append(
+                highs[i]
+            )
+
+        if (
+            lows[i] < lows[i - 1]
+            and lows[i] < lows[i + 1]
+        ):
+
+            swing_lows.append(
+                lows[i]
+            )
+
+    last_swing_high = (
+        swing_highs[-1]
+        if swing_highs
+        else max(highs[-20:])
+    )
+
+    last_swing_low = (
+        swing_lows[-1]
+        if swing_lows
+        else min(lows[-20:])
+    )
+
+    return (
+        last_swing_high,
+        last_swing_low
+    )
 
 
 # =========================================================
@@ -354,26 +548,388 @@ def volume_ratio(info):
         20
     )
 
-    if not average or average == 0:
+    if not average:
         return 0
 
-    return volumes[-1] / average
+    return (
+        volumes[-1]
+        / average
+    )
 
 
 # =========================================================
-# OPPORTUNITY ANALYSIS
+# PRICE ACTION
 # =========================================================
 
-def analyze_symbol(symbol, data_1h, data_4h):
+def price_action(info):
 
-    one_h = timeframe_analysis(data_1h)
-    four_h = timeframe_analysis(data_4h)
+    highs = info["highs"]
+    lows = info["lows"]
+    closes = info["closes"]
+    volumes = info["volumes"]
+
+    price = closes[-1]
+
+    atr_value = info["atr"]
+
+    if not atr_value:
+        atr_value = price * 0.01
+
+    recent_high = max(
+        highs[-20:-1]
+    )
+
+    recent_low = min(
+        lows[-20:-1]
+    )
+
+    previous_high = max(
+        highs[-10:-2]
+    )
+
+    previous_low = min(
+        lows[-10:-2]
+    )
+
+    avg_volume = sma(
+        volumes[:-1],
+        20
+    )
+
+    current_volume = volumes[-1]
+
+    if avg_volume:
+        vol_ratio = (
+            current_volume
+            / avg_volume
+        )
+    else:
+        vol_ratio = 0
+
+    # -----------------------------------------------------
+    # LIQUIDITY SWEEP
+    # -----------------------------------------------------
+
+    bullish_sweep = (
+        lows[-1] < previous_low
+        and closes[-1] > previous_low
+    )
+
+    bearish_sweep = (
+        highs[-1] > previous_high
+        and closes[-1] < previous_high
+    )
+
+    # -----------------------------------------------------
+    # BREAKOUT
+    # -----------------------------------------------------
+
+    bullish_breakout = (
+        closes[-1] > recent_high
+    )
+
+    bearish_breakdown = (
+        closes[-1] < recent_low
+    )
+
+    # -----------------------------------------------------
+    # RETEST
+    # -----------------------------------------------------
+
+    bullish_retest = (
+        lows[-1] <= recent_high * 1.003
+        and closes[-1] > recent_high
+    )
+
+    bearish_retest = (
+        highs[-1] >= recent_low * 0.997
+        and closes[-1] < recent_low
+    )
+
+    # -----------------------------------------------------
+    # CANDLE STRENGTH
+    # -----------------------------------------------------
+
+    candle_range = (
+        highs[-1]
+        - lows[-1]
+    )
+
+    if candle_range > 0:
+
+        body = abs(
+            closes[-1]
+            - info["opens"][-1]
+        )
+
+        body_ratio = (
+            body
+            / candle_range
+        )
+
+    else:
+
+        body_ratio = 0
+
+    bullish_candle = (
+        closes[-1]
+        > info["opens"][-1]
+        and body_ratio >= 0.55
+    )
+
+    bearish_candle = (
+        closes[-1]
+        < info["opens"][-1]
+        and body_ratio >= 0.55
+    )
+
+    # -----------------------------------------------------
+    # SCORES
+    # -----------------------------------------------------
+
+    long_score = 0
+    short_score = 0
+
+    long_reasons = []
+    short_reasons = []
+
+    if bullish_sweep:
+
+        long_score += 2
+
+        long_reasons.append(
+            "Likidite sweep yukari"
+        )
+
+    if bearish_sweep:
+
+        short_score += 2
+
+        short_reasons.append(
+            "Likidite sweep asagi"
+        )
+
+    if bullish_breakout:
+
+        long_score += 2
+
+        long_reasons.append(
+            "Bullish breakout"
+        )
+
+    if bearish_breakdown:
+
+        short_score += 2
+
+        short_reasons.append(
+            "Bearish breakdown"
+        )
+
+    if bullish_retest:
+
+        long_score += 1
+
+        long_reasons.append(
+            "Breakout retest"
+        )
+
+    if bearish_retest:
+
+        short_score += 1
+
+        short_reasons.append(
+            "Breakdown retest"
+        )
+
+    if bullish_candle:
+
+        long_score += 1
+
+        long_reasons.append(
+            "Guclu bullish candle"
+        )
+
+    if bearish_candle:
+
+        short_score += 1
+
+        short_reasons.append(
+            "Guclu bearish candle"
+        )
+
+    if vol_ratio >= 1.5:
+
+        if bullish_breakout:
+
+            long_score += 1
+
+            long_reasons.append(
+                f"Hacim breakout ({vol_ratio:.2f}x)"
+            )
+
+        if bearish_breakdown:
+
+            short_score += 1
+
+            short_reasons.append(
+                f"Hacim breakdown ({vol_ratio:.2f}x)"
+            )
+
+    return {
+        "long_score": long_score,
+        "short_score": short_score,
+        "long_reasons": long_reasons,
+        "short_reasons": short_reasons,
+        "bullish_sweep": bullish_sweep,
+        "bearish_sweep": bearish_sweep,
+        "bullish_breakout": bullish_breakout,
+        "bearish_breakdown": bearish_breakdown,
+        "bullish_retest": bullish_retest,
+        "bearish_retest": bearish_retest,
+        "recent_high": recent_high,
+        "recent_low": recent_low,
+        "vol_ratio": vol_ratio
+    }
+
+
+# =========================================================
+# MARKET REGIME
+# =========================================================
+
+def market_regime(btc_4h):
+
+    if not btc_4h:
+        return "UNKNOWN"
+
+    trend = btc_4h["trend"]
+    rsi_value = btc_4h["rsi"]
+
+    if (
+        trend == "YUKSELIS"
+        and rsi_value is not None
+        and rsi_value >= 50
+    ):
+
+        return "RISK_ON"
+
+    if (
+        trend == "DUSUS"
+        and rsi_value is not None
+        and rsi_value <= 50
+    ):
+
+        return "RISK_OFF"
+
+    return "NEUTRAL"
+
+
+# =========================================================
+# TRADE SETUP
+# =========================================================
+
+def trade_levels(
+    signal,
+    price,
+    support,
+    resistance,
+    atr_value
+):
+
+    if not atr_value:
+        atr_value = price * 0.01
+
+    if signal == "LONG":
+
+        stop = min(
+            support - atr_value * 0.20,
+            price - atr_value * 1.20
+        )
+
+        risk = price - stop
+
+        tp1 = (
+            price
+            + risk * 1.5
+        )
+
+        tp2 = (
+            price
+            + risk * 2.5
+        )
+
+    else:
+
+        stop = max(
+            resistance + atr_value * 0.20,
+            price + atr_value * 1.20
+        )
+
+        risk = stop - price
+
+        tp1 = (
+            price
+            - risk * 1.5
+        )
+
+        tp2 = (
+            price
+            - risk * 2.5
+        )
+
+    rr = (
+        2.5
+        if risk > 0
+        else 0
+    )
+
+    return (
+        price,
+        stop,
+        tp1,
+        tp2,
+        rr
+    )
+
+
+# =========================================================
+# SYMBOL ANALYSIS
+# =========================================================
+
+def analyze_symbol(
+    symbol,
+    data_1h,
+    data_4h,
+    btc_regime="NEUTRAL"
+):
+
+    one_h = timeframe_analysis(
+        data_1h
+    )
+
+    four_h = timeframe_analysis(
+        data_4h
+    )
 
     price = one_h["price"]
 
-    support, resistance = levels(one_h)
+    support, resistance = levels(
+        one_h
+    )
 
-    vol_ratio = volume_ratio(one_h)
+    (
+        swing_high,
+        swing_low
+    ) = swing_levels(
+        one_h
+    )
+
+    vol_ratio = volume_ratio(
+        one_h
+    )
+
+    pa = price_action(
+        one_h
+    )
 
     long_score = 0
     short_score = 0
@@ -382,7 +938,7 @@ def analyze_symbol(symbol, data_1h, data_4h):
     short_reasons = []
 
     # -----------------------------------------------------
-    # 4H MARKET DIRECTION
+    # TREND
     # -----------------------------------------------------
 
     if four_h["trend"] == "YUKSELIS":
@@ -400,10 +956,6 @@ def analyze_symbol(symbol, data_1h, data_4h):
         short_reasons.append(
             "4H trend dusus"
         )
-
-    # -----------------------------------------------------
-    # 1H TREND
-    # -----------------------------------------------------
 
     if one_h["trend"] == "YUKSELIS":
 
@@ -487,68 +1039,65 @@ def analyze_symbol(symbol, data_1h, data_4h):
         )
 
     # -----------------------------------------------------
-    # LONG SETUP
+    # PRICE ACTION
     # -----------------------------------------------------
 
-    long_entry = price
+    long_score += pa["long_score"]
+    short_score += pa["short_score"]
 
-    long_stop = min(
-        support - one_h["atr"] * 0.25,
-        price - one_h["atr"] * 1.2
+    long_reasons.extend(
+        pa["long_reasons"]
     )
 
-    long_risk = (
-        long_entry - long_stop
-    )
-
-    long_tp1 = (
-        long_entry
-        + long_risk * 1.5
-    )
-
-    long_tp2 = (
-        long_entry
-        + long_risk * 2.5
-    )
-
-    long_rr = (
-        (long_tp2 - long_entry)
-        / long_risk
-        if long_risk > 0
-        else 0
+    short_reasons.extend(
+        pa["short_reasons"]
     )
 
     # -----------------------------------------------------
-    # SHORT SETUP
+    # BTC REGIME
     # -----------------------------------------------------
 
-    short_entry = price
+    if btc_regime == "RISK_ON":
 
-    short_stop = max(
-        resistance + one_h["atr"] * 0.25,
-        price + one_h["atr"] * 1.2
-    )
+        long_score += 1
 
-    short_risk = (
-        short_stop - short_entry
-    )
+        long_reasons.append(
+            "BTC risk-on"
+        )
 
-    short_tp1 = (
-        short_entry
-        - short_risk * 1.5
-    )
+    elif btc_regime == "RISK_OFF":
 
-    short_tp2 = (
-        short_entry
-        - short_risk * 2.5
-    )
+        short_score += 1
 
-    short_rr = (
-        (short_entry - short_tp2)
-        / short_risk
-        if short_risk > 0
-        else 0
-    )
+        short_reasons.append(
+            "BTC risk-off"
+        )
+
+    # -----------------------------------------------------
+    # MARKET STRUCTURE
+    # -----------------------------------------------------
+
+    if (
+        price > swing_high
+        and one_h["trend"] == "YUKSELIS"
+    ):
+
+        long_score += 1
+
+        long_reasons.append(
+            "Swing high kirildi"
+        )
+
+    if (
+        price < swing_low
+        and one_h["trend"] == "DUSUS"
+    ):
+
+        short_score += 1
+
+        short_reasons.append(
+            "Swing low kirildi"
+        )
 
     # -----------------------------------------------------
     # SIGNAL
@@ -569,11 +1118,44 @@ def analyze_symbol(symbol, data_1h, data_4h):
     tp2 = 0
     rr = 0
 
-    if (
-        long_score >= 5
-        and four_h["trend"] == "YUKSELIS"
-        and one_h["trend"] == "YUKSELIS"
-        and long_rr >= 2
+    # Daha kaliteli sinyal için
+    # price action veya güçlü trend şartı.
+
+    long_valid = (
+        long_score >= 7
+        and (
+            pa["long_score"] >= 2
+            or (
+                four_h["trend"]
+                == "YUKSELIS"
+                and one_h["trend"]
+                == "YUKSELIS"
+            )
+        )
+    )
+
+    short_valid = (
+        short_score >= 7
+        and (
+            pa["short_score"] >= 2
+            or (
+                four_h["trend"]
+                == "DUSUS"
+                and one_h["trend"]
+                == "DUSUS"
+            )
+        )
+    )
+
+    # BTC risk filtresi
+    if btc_regime == "RISK_OFF":
+        long_valid = False
+
+    if btc_regime == "RISK_ON":
+        short_valid = False
+
+    if long_valid and (
+        long_score > short_score
     ):
 
         signal = "LONG"
@@ -582,17 +1164,22 @@ def analyze_symbol(symbol, data_1h, data_4h):
 
         reasons = long_reasons
 
-        entry = long_entry
-        stop = long_stop
-        tp1 = long_tp1
-        tp2 = long_tp2
-        rr = long_rr
+        (
+            entry,
+            stop,
+            tp1,
+            tp2,
+            rr
+        ) = trade_levels(
+            "LONG",
+            price,
+            support,
+            resistance,
+            one_h["atr"]
+        )
 
-    elif (
-        short_score >= 5
-        and four_h["trend"] == "DUSUS"
-        and one_h["trend"] == "DUSUS"
-        and short_rr >= 2
+    elif short_valid and (
+        short_score > long_score
     ):
 
         signal = "SHORT"
@@ -601,22 +1188,36 @@ def analyze_symbol(symbol, data_1h, data_4h):
 
         reasons = short_reasons
 
-        entry = short_entry
-        stop = short_stop
-        tp1 = short_tp1
-        tp2 = short_tp2
-        rr = short_rr
+        (
+            entry,
+            stop,
+            tp1,
+            tp2,
+            rr
+        ) = trade_levels(
+            "SHORT",
+            price,
+            support,
+            resistance,
+            one_h["atr"]
+        )
 
     # -----------------------------------------------------
-    # SETUP QUALITY
+    # QUALITY
     # -----------------------------------------------------
 
-    if signal == "LONG" or signal == "SHORT":
+    if signal in (
+        "LONG",
+        "SHORT"
+    ):
 
-        if score >= 7:
+        if score >= 10:
+            quality = "A+"
+
+        elif score >= 8:
             quality = "A"
 
-        elif score >= 6:
+        elif score >= 7:
             quality = "B"
 
         else:
@@ -635,14 +1236,17 @@ def analyze_symbol(symbol, data_1h, data_4h):
     if signal == "LONG":
 
         if price > entry * 1.015:
+
             entry_status = "KACTI"
 
     elif signal == "SHORT":
 
         if price < entry * 0.985:
+
             entry_status = "KACTI"
 
     return {
+
         "symbol": symbol.replace(
             "USDT",
             ""
@@ -678,6 +1282,16 @@ def analyze_symbol(symbol, data_1h, data_4h):
 
         "resistance": resistance,
 
+        "swing_high": swing_high,
+
+        "swing_low": swing_low,
+
+        "pa_long": pa["long_score"],
+
+        "pa_short": pa["short_score"],
+
+        "btc_regime": btc_regime,
+
         "entry_status": entry_status,
 
         "reasons": reasons
@@ -690,13 +1304,19 @@ def analyze_symbol(symbol, data_1h, data_4h):
 
 def price_format(value):
 
+    if value is None:
+        return "-"
+
     if value >= 100:
+
         return f"${value:,.2f}"
 
     if value >= 1:
+
         return f"${value:.4f}"
 
     if value >= 0.01:
+
         return f"${value:.6f}"
 
     return f"${value:.8f}"
@@ -724,6 +1344,7 @@ def get_market_symbols():
         if not symbol.endswith(
             "USDT"
         ):
+
             continue
 
         try:
@@ -740,6 +1361,7 @@ def get_market_symbols():
             continue
 
         if volume < MIN_QUOTE_VOLUME:
+
             continue
 
         symbols.append(
@@ -761,27 +1383,315 @@ def get_market_symbols():
 
 
 # =========================================================
+# BACKTEST
+# =========================================================
+
+def aggregate_4h_from_1h(data):
+
+    if len(data) < 4:
+        return []
+
+    result = []
+
+    for i in range(
+        0,
+        len(data) - 3,
+        4
+    ):
+
+        block = data[
+            i:i + 4
+        ]
+
+        if len(block) < 4:
+            continue
+
+        first = block[0]
+        last = block[-1]
+
+        candle = [
+            first[0],
+            first[1],
+            max(
+                float(x[2])
+                for x in block
+            ),
+            min(
+                float(x[3])
+                for x in block
+            ),
+            last[4],
+            sum(
+                float(x[5])
+                for x in block
+            ),
+            last[6],
+            last[7],
+            last[8],
+            last[9],
+            last[10],
+            last[11]
+        ]
+
+        result.append(candle)
+
+    return result
+
+
+def backtest_symbol(symbol):
+
+    try:
+
+        data = get_klines(
+            symbol,
+            "1h",
+            1000
+        )
+
+    except Exception:
+
+        return None
+
+    if len(data) < 300:
+
+        return None
+
+    wins = 0
+    losses = 0
+    total_r = 0
+    trades = 0
+
+    equity = 0
+    peak = 0
+    max_drawdown = 0
+
+    # Son ~700 mum üzerinde
+    # basit walk-forward test.
+
+    start = 250
+
+    for i in range(
+        start,
+        len(data) - 12
+    ):
+
+        window = data[
+            i - 200:i
+        ]
+
+        future = data[
+            i:i + 12
+        ]
+
+        data_4h = aggregate_4h_from_1h(
+            window
+        )
+
+        if len(data_4h) < 60:
+            continue
+
+        try:
+
+            result = analyze_symbol(
+                symbol,
+                window,
+                data_4h,
+                "NEUTRAL"
+            )
+
+        except Exception:
+
+            continue
+
+        if result["signal"] not in (
+            "LONG",
+            "SHORT"
+        ):
+
+            continue
+
+        entry = float(
+            data[i][4]
+        )
+
+        stop = result["stop"]
+        tp2 = result["tp2"]
+
+        if not stop or not tp2:
+            continue
+
+        trades += 1
+
+        outcome = None
+
+        for candle in future:
+
+            high = float(
+                candle[2]
+            )
+
+            low = float(
+                candle[3]
+            )
+
+            if result["signal"] == "LONG":
+
+                if low <= stop:
+
+                    outcome = -1
+                    break
+
+                if high >= tp2:
+
+                    outcome = 2.5
+                    break
+
+            else:
+
+                if high >= stop:
+
+                    outcome = -1
+                    break
+
+                if low <= tp2:
+
+                    outcome = 2.5
+                    break
+
+        if outcome is None:
+
+            final_price = float(
+                future[-1][4]
+            )
+
+            if result["signal"] == "LONG":
+
+                risk = (
+                    entry - stop
+                )
+
+                if risk > 0:
+
+                    outcome = (
+                        final_price
+                        - entry
+                    ) / risk
+
+            else:
+
+                risk = (
+                    stop - entry
+                )
+
+                if risk > 0:
+
+                    outcome = (
+                        entry
+                        - final_price
+                    ) / risk
+
+            if outcome is None:
+                continue
+
+            outcome = max(
+                -1,
+                min(
+                    2.5,
+                    outcome
+                )
+            )
+
+        total_r += outcome
+
+        equity += outcome
+
+        peak = max(
+            peak,
+            equity
+        )
+
+        drawdown = (
+            peak
+            - equity
+        )
+
+        max_drawdown = max(
+            max_drawdown,
+            drawdown
+        )
+
+        if outcome > 0:
+
+            wins += 1
+
+        else:
+
+            losses += 1
+
+    if trades == 0:
+        return None
+
+    win_rate = (
+        wins
+        / trades
+        * 100
+    )
+
+    return {
+
+        "symbol": symbol.replace(
+            "USDT",
+            ""
+        ),
+
+        "trades": trades,
+
+        "wins": wins,
+
+        "losses": losses,
+
+        "win_rate": win_rate,
+
+        "total_r": total_r,
+
+        "max_drawdown": max_drawdown
+    }
+
+
+# =========================================================
 # MAIN
 # =========================================================
 
 def main():
 
     print()
-    print("=" * 60)
-    print("          CRYPTO RESEARCH AGENT")
-    print("=" * 60)
+
+    print("=" * 70)
+
+    print(
+        "             CRYPTO RESEARCH AGENT 4.0"
+    )
+
+    print("=" * 70)
 
     print()
-    print("4H + 1H MULTI-TIMEFRAME ANALYSIS")
+
+    print(
+        "PRICE ACTION + MULTI-TIMEFRAME "
+        "+ MARKET REGIME"
+    )
+
     print()
 
     results = []
 
     # =====================================================
-    # BTC MARKET FILTER
+    # BTC MARKET REGIME
     # =====================================================
 
-    print("BTC 4H piyasa filtresi hesaplanıyor...")
+    print(
+        "BTC 4H piyasa rejimi hesaplanıyor..."
+    )
 
     try:
 
@@ -794,15 +1704,25 @@ def main():
             btc_4h_data
         )
 
+        btc_regime = market_regime(
+            btc_4h
+        )
+
         print()
+
         print(
-            f"BTC 4H TREND: "
+            f"BTC 4H TREND : "
             f"{btc_4h['trend']}"
         )
 
         print(
-            f"BTC 4H RSI: "
+            f"BTC 4H RSI   : "
             f"{btc_4h['rsi']:.1f}"
+        )
+
+        print(
+            f"BTC REGIME   : "
+            f"{btc_regime}"
         )
 
     except Exception as e:
@@ -812,15 +1732,21 @@ def main():
         )
 
         btc_4h = None
+        btc_regime = "NEUTRAL"
 
     # =====================================================
     # WATCHLIST
     # =====================================================
 
     print()
-    print("=" * 60)
-    print("              TAKIP LISTESI")
-    print("=" * 60)
+
+    print("=" * 70)
+
+    print(
+        "                    TAKIP LISTESI"
+    )
+
+    print("=" * 70)
 
     for symbol in WATCHLIST:
 
@@ -831,6 +1757,8 @@ def main():
                 "1h"
             )
 
+            time.sleep(0.4)
+
             data_4h = get_klines(
                 symbol,
                 "4h"
@@ -839,25 +1767,31 @@ def main():
             result = analyze_symbol(
                 symbol,
                 data_1h,
-                data_4h
+                data_4h,
+                btc_regime
             )
 
-            results.append(result)
+            results.append(
+                result
+            )
 
             print()
+
             print(
-                f"{result['symbol']} "
-                f"{result['signal']} "
-                f"{result['score']}/7 "
-                f"1H:{result['trend_1h']} "
-                f"4H:{result['trend_4h']}"
+                f"{result['symbol']:5} "
+                f"{result['signal']:6} "
+                f"{result['quality']:2} "
+                f"{result['score']:2} "
+                f"1H:{result['trend_1h']:8} "
+                f"4H:{result['trend_4h']:8}"
             )
 
-            time.sleep(0.25)
+            time.sleep(0.5)
 
         except Exception as e:
 
             print()
+
             print(
                 f"{symbol} HATA: {e}"
             )
@@ -867,13 +1801,22 @@ def main():
     # =====================================================
 
     print()
-    print("=" * 60)
-    print("           PIYASA TARAMASI")
-    print("=" * 60)
+
+    print("=" * 70)
+
+    print(
+        "                  PIYASA TARAMASI"
+    )
+
+    print("=" * 70)
 
     try:
 
-        market_symbols = get_market_symbols()
+        market_symbols = (
+            get_market_symbols()
+        )
+
+        print()
 
         print(
             f"{len(market_symbols)} "
@@ -892,6 +1835,8 @@ def main():
                     "1h"
                 )
 
+                time.sleep(0.35)
+
                 data_4h = get_klines(
                     symbol,
                     "4h"
@@ -900,12 +1845,15 @@ def main():
                 result = analyze_symbol(
                     symbol,
                     data_1h,
-                    data_4h
+                    data_4h,
+                    btc_regime
                 )
 
-                results.append(result)
+                results.append(
+                    result
+                )
 
-                time.sleep(0.25)
+                time.sleep(0.5)
 
             except Exception:
 
@@ -918,62 +1866,59 @@ def main():
         )
 
     # =====================================================
-    # BTC FILTER
-    # =====================================================
-
-    if btc_4h:
-
-        btc_trend = btc_4h["trend"]
-
-        for result in results:
-
-            if result["signal"] == "LONG":
-
-                if btc_trend == "DUSUS":
-
-                    result["signal"] = "BEKLE"
-                    result["quality"] = "-"
-                    result["entry_status"] = "BTC FILTRELEDI"
-
-            elif result["signal"] == "SHORT":
-
-                if btc_trend == "YUKSELIS":
-
-                    result["signal"] = "BEKLE"
-                    result["quality"] = "-"
-                    result["entry_status"] = "BTC FILTRELEDI"
-
-    # =====================================================
-    # BEST OPPORTUNITIES
+    # OPPORTUNITIES
     # =====================================================
 
     opportunities = [
+
         r for r in results
+
         if r["signal"] in (
             "LONG",
             "SHORT"
         )
+
         and r["entry_status"] != "KACTI"
     ]
 
+    quality_rank = {
+        "A+": 4,
+        "A": 3,
+        "B": 2,
+        "C": 1,
+        "-": 0
+    }
+
     opportunities.sort(
+
         key=lambda x: (
-            x["quality"],
+            quality_rank.get(
+                x["quality"],
+                0
+            ),
             x["score"],
-            x["rr"]
+            x["rr"],
+            x["pa_long"]
+            + x["pa_short"]
         ),
+
         reverse=True
     )
 
     print()
-    print()
-    print("=" * 60)
-    print("              EN IYI FIRSATLAR")
-    print("=" * 60)
+
+    print("=" * 70)
+
+    print(
+        "                    EN IYI FIRSATLAR"
+    )
+
+    print("=" * 70)
 
     if not opportunities:
 
         print()
+
         print(
             "SU ANDA KALITELI "
             "TRADE FIRSATI YOK."
@@ -991,77 +1936,91 @@ def main():
         ):
 
             print()
+
             print(
                 f"{i}. "
                 f"{result['symbol']} "
-                f"{result['signal']}"
+                f"{result['signal']} "
+                f"[{result['quality']}]"
             )
 
             print(
-                f"   Kalite : "
-                f"{result['quality']}"
+                f"   Skor        : "
+                f"{result['score']}"
             )
 
             print(
-                f"   Skor   : "
-                f"{result['score']}/7"
-            )
-
-            print(
-                f"   Fiyat  : "
+                f"   Fiyat       : "
                 f"{price_format(result['price'])}"
             )
 
             print(
-                f"   Giris  : "
+                f"   Giris       : "
                 f"{price_format(result['entry'])}"
             )
 
             print(
-                f"   Stop   : "
+                f"   Stop        : "
                 f"{price_format(result['stop'])}"
             )
 
             print(
-                f"   TP1    : "
+                f"   TP1         : "
                 f"{price_format(result['tp1'])}"
             )
 
             print(
-                f"   TP2    : "
+                f"   TP2         : "
                 f"{price_format(result['tp2'])}"
             )
 
             print(
-                f"   R/R    : "
+                f"   R/R         : "
                 f"{result['rr']:.2f}"
             )
 
             print(
-                f"   RSI    : "
+                f"   RSI         : "
                 f"{result['rsi']:.1f}"
             )
 
             print(
-                f"   Hacim  : "
+                f"   Hacim       : "
                 f"{result['volume_ratio']:.2f}x"
             )
 
             print(
-                f"   1H     : "
+                f"   1H          : "
                 f"{result['trend_1h']}"
             )
 
             print(
-                f"   4H     : "
+                f"   4H          : "
                 f"{result['trend_4h']}"
+            )
+
+            print(
+                f"   BTC Rejim   : "
+                f"{result['btc_regime']}"
+            )
+
+            print(
+                f"   PA Long     : "
+                f"{result['pa_long']}"
+            )
+
+            print(
+                f"   PA Short    : "
+                f"{result['pa_short']}"
             )
 
             print(
                 "   Neden:"
             )
 
-            for reason in result["reasons"]:
+            for reason in result[
+                "reasons"
+            ]:
 
                 print(
                     f"   - {reason}"
@@ -1072,31 +2031,167 @@ def main():
     # =====================================================
 
     print()
-    print()
-    print("=" * 60)
-    print("             TAKIP OZETI")
-    print("=" * 60)
+
+    print("=" * 70)
+
+    print(
+        "                    TAKIP OZETI"
+    )
+
+    print("=" * 70)
 
     for result in results:
 
         if (
-            result["symbol"] + "USDT"
+            result["symbol"]
+            + "USDT"
             in WATCHLIST
         ):
 
             print(
+
                 f"{result['symbol']:6} "
+
                 f"{result['signal']:6} "
-                f"{result['score']}/7 "
+
+                f"{result['quality']:2} "
+
+                f"{result['score']:2} "
+
                 f"1H:{result['trend_1h'][:3]} "
+
                 f"4H:{result['trend_4h'][:3]}"
             )
 
+    # =====================================================
+    # BACKTEST
+    # =====================================================
+
     print()
-    print("=" * 60)
-    print("             ANALIZ TAMAMLANDI")
-    print("=" * 60)
+
+    print("=" * 70)
+
+    print(
+        "                     BACKTEST"
+    )
+
+    print("=" * 70)
+
+    print()
+
+    print(
+        "Son ~1000 adet 1H mum "
+        "uzerinde walk-forward test..."
+    )
+
+    backtest_results = []
+
+    for symbol in WATCHLIST:
+
+        print(
+            f"Backtest: {symbol}"
+        )
+
+        try:
+
+            result = backtest_symbol(
+                symbol
+            )
+
+            if result:
+
+                backtest_results.append(
+                    result
+                )
+
+                print(
+
+                    f"   Islem: "
+                    f"{result['trades']} | "
+
+                    f"Win: "
+                    f"{result['win_rate']:.1f}% | "
+
+                    f"R: "
+                    f"{result['total_r']:.2f} | "
+
+                    f"DD: "
+                    f"{result['max_drawdown']:.2f}"
+                )
+
+        except Exception as e:
+
+            print(
+                f"   Backtest hata: {e}"
+            )
+
+        time.sleep(0.5)
+
+    # =====================================================
+    # BEST BACKTEST
+    # =====================================================
+
+    print()
+
+    print("=" * 70)
+
+    print(
+        "                  BACKTEST SIRALAMASI"
+    )
+
+    print("=" * 70)
+
+    backtest_results.sort(
+
+        key=lambda x: (
+            x["total_r"],
+            x["win_rate"]
+        ),
+
+        reverse=True
+    )
+
+    for i, result in enumerate(
+        backtest_results,
+        start=1
+    ):
+
+        print()
+
+        print(
+            f"{i}. {result['symbol']} "
+            f"| {result['trades']} islem "
+            f"| Win {result['win_rate']:.1f}% "
+            f"| R {result['total_r']:.2f} "
+            f"| DD {result['max_drawdown']:.2f}"
+        )
+
+    # =====================================================
+    # FINAL
+    # =====================================================
+
+    print()
+
+    print("=" * 70)
+
+    print(
+        "                  ANALIZ TAMAMLANDI"
+    )
+
+    print("=" * 70)
+
+    print()
+
+    print(
+        "NOT: Bu sistem otomatik trade acmaz."
+    )
+
+    print(
+        "Sinyaller teknik analiz ve "
+        "backtest amacli uretilir."
+    )
 
 
 if __name__ == "__main__":
+
     main()
