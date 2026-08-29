@@ -3,18 +3,49 @@ name: Crypto Research Agent
 on:
   workflow_dispatch:
 
+  schedule:
+    - cron: "*/15 * * * *"
+
+permissions:
+  contents: read
+
 jobs:
-  research:
+
+  run-agent:
+
     runs-on: ubuntu-latest
 
     steps:
+
+      # ------------------------------------------------------
+      # CHECKOUT
+      # ------------------------------------------------------
+
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      # ------------------------------------------------------
+      # PYTHON
+      # ------------------------------------------------------
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          python-version: "3.12"
 
-      - name: Run Crypto Research Agent
-        run: python agent.py
+      # ------------------------------------------------------
+      # INSTALL DEPENDENCIES
+      # ------------------------------------------------------
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy requests
+
+      # ------------------------------------------------------
+      # RUN AGENT
+      # ------------------------------------------------------
+
+      - name: Run crypto agent
+        run: |
+          python agent.py
