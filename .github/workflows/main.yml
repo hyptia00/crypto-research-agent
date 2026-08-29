@@ -1,0 +1,12 @@
+name: Crypto Research Agent
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Test agent
+        run: echo "Crypto Research Agent is working!"
