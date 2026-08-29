@@ -3,7 +3,30 @@
 # MAIN ORCHESTRATOR
 # ============================================================
 
-from config import CORE_COINS, DISCOVERY_ENABLED
+from config import (
+    CORE_COINS,
+    DISCOVERY_ENABLED,
+    DISCOVERY_LIMIT,
+    MIN_DISCOVERY_VOLUME,
+    DATA_LIMIT,
+    FUTURES_ENABLED,
+    SPOT_ENABLED,
+    SCALPING_ENABLED,
+    FUTURES_MIN_SCORE,
+    FUTURES_MIN_CONFIDENCE,
+    FUTURES_MIN_RR,
+    SPOT_MIN_SCORE,
+    SPOT_MIN_CONFIDENCE,
+    SPOT_MIN_RR,
+    SCALPING_MIN_SCORE,
+    SCALPING_MIN_CONFIDENCE,
+    SCALPING_MIN_RR,
+    STARTING_BALANCE,
+    RISK_PER_TRADE,
+    MAX_OPEN_POSITIONS,
+    MIN_AGGREGATED_SCORE,
+    MIN_AGGREGATED_CONFIDENCE,
+)
 
 from market.data_engine import (
     get_multi_timeframe_data,
@@ -45,11 +68,6 @@ from engine.paper import (
 # SETTINGS
 # ============================================================
 
-STARTING_BALANCE = 1000.0
-
-DATA_LIMIT = 200
-
-DISCOVERY_LIMIT = 10
 
 MAX_SIGNALS = 10
 
