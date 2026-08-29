@@ -1,656 +1,393 @@
 # ============================================================
-# CRYPTO RESEARCH AGENT
 # SIGNAL AGGREGATOR
 # ============================================================
 
-from config import (
-    FUTURES_MIN_SCORE,
-    SPOT_MIN_SCORE,
-    SCALPING_MIN_SCORE,
-)
+from typing import Any, Dict, List
 
 
-# ============================================================
-# HELPERS
-# ============================================================
+def _score(signal: Dict[str, Any]) -> float:
+    """
+    Sinyalin karşılaştırılabilir skorunu üretir.
+    Farklı stratejilerden gelen score formatlarını normalize eder.
+    """
 
-def _score(signal):
+    value = signal.get("score", 0)
+
     try:
-        return float(
-            signal.get("score", 0)
-        )
+        value = float(value)
     except (TypeError, ValueError):
-        return 0.0
+        value = 0.0
+
+    # 4/5, 6/7 gibi string skorları destekle
+    if isinstance(signal.get("score"), str):
+        raw = signal["score"].strip()
+
+        if "/" in raw:
+            try:
+                a, b = raw.split("/", 1)
+                value = float(a) / float(b) * 10.0
+            except (ValueError, ZeroDivisionError):
+                value = 0.0
+
+    return value
 
 
-def _confidence(signal):
+def _confidence(signal: Dict[str, Any]) -> float:
+    """
+    Confidence değerini 0-100 aralığına çevirir.
+    """
+
+    value = signal.get(
+        "confidence",
+        signal.get("guven", 0)
+    )
+
     try:
-        return float(
-            signal.get("confidence", 0)
-        )
+        value = float(value)
     except (TypeError, ValueError):
-        return 0.0
+        value = 0.0
+
+    if value <= 1:
+        value *= 100
+
+    return max(0.0, min(100.0, value))
 
 
-def _side(signal):
-    return signal.get("side")
-
-
-def _is_valid(signal):
-    return (
-        signal is not None
-        and _side(signal) not in (
-            None,
-            "WAIT",
+def _direction(signal: Dict[str, Any]) -> str:
+    return str(
+        signal.get(
+            "direction",
+            signal.get(
+                "side",
+                signal.get("signal", "")
+            )
         )
-        and _score(signal) > 0
-    )
+    ).upper()
 
 
-# ============================================================
-# STRATEGY WEIGHTS
-# ============================================================
-
-def _weight(signal):
-
-    market = signal.get(
-        "market",
-        ""
-    )
-
-    if market == "FUTURES":
-        return 1.00
-
-    if market == "SPOT":
-        return 0.95
-
-    if market == "SCALPING":
-        return 0.90
-
-    return 0.80
+def _symbol(signal: Dict[str, Any]) -> str:
+    return str(
+        signal.get(
+            "symbol",
+            signal.get("coin", "")
+        )
+    ).upper()
 
 
-# ============================================================
-# QUALITY
-# ============================================================
-
-def _quality(signal):
-
-    score = _score(signal)
-    confidence = _confidence(signal)
-
-    weight = _weight(
-        signal
-    )
-
-    return (
-        score * 10 * weight
-        +
-        confidence * 0.25
-    )
+def _strategy(signal: Dict[str, Any]) -> str:
+    return str(
+        signal.get(
+            "strategy",
+            signal.get("source", "UNKNOWN")
+        )
+    ).upper()
 
 
-# ============================================================
-# DIRECTION GROUPING
-# ============================================================
+def aggregate_signals(
+    signals: List[Dict[str, Any]],
+    min_score: float = 6.0,
+    min_confidence: float = 60.0,
+) -> List[Dict[str, Any]]:
+    """
+    Futures / Spot / Scalping sinyallerini birleştirir.
 
-def _group_by_direction(
-    signals
-):
+    Aynı coin için karşıt yönlü sinyaller varsa
+    doğrudan işlem sinyali üretmez.
+    """
 
-    groups = {
-        "LONG": [],
-        "SHORT": [],
-    }
+    if not signals:
+        return []
+
+    valid = []
+
+    # --------------------------------------------------------
+    # 1. NORMALIZE
+    # --------------------------------------------------------
 
     for signal in signals:
 
-        side = _side(
-            signal
-        )
-
-        if side in groups:
-            groups[side].append(
-                signal
-            )
-
-    return groups
-
-
-# ============================================================
-# AGREEMENT
-# ============================================================
-
-def _agreement_score(
-    signals
-):
-
-    if not signals:
-        return 0
-
-    long_count = sum(
-        1
-        for x in signals
-        if x.get("side") == "LONG"
-    )
-
-    short_count = sum(
-        1
-        for x in signals
-        if x.get("side") == "SHORT"
-    )
-
-    if long_count > short_count:
-        return long_count
-
-    if short_count > long_count:
-        return short_count
-
-    return 0
-
-
-# ============================================================
-# BEST SIGNAL
-# ============================================================
-
-def _best_signal(
-    signals
-):
-
-    if not signals:
-        return None
-
-    return max(
-        signals,
-        key=_quality
-    )
-
-
-# ============================================================
-# FINAL CONFIDENCE
-# ============================================================
-
-def _calculate_confidence(
-    selected,
-    all_signals
-):
-
-    if not selected:
-        return 0
-
-    base = _confidence(
-        selected
-    )
-
-    side = selected.get(
-        "side"
-    )
-
-    confirmations = [
-        x
-        for x in all_signals
-        if x.get("side") == side
-    ]
-
-    count = len(
-        confirmations
-    )
-
-    # --------------------------------------------------------
-    # STRATEGY AGREEMENT
-    # --------------------------------------------------------
-
-    if count >= 3:
-        base += 15
-
-    elif count == 2:
-        base += 8
-
-    # --------------------------------------------------------
-    # QUALITY
-    # --------------------------------------------------------
-
-    if _score(selected) >= 10:
-        base += 5
-
-    return min(
-        99,
-        base
-    )
-
-
-# ============================================================
-# RISK CONSISTENCY
-# ============================================================
-
-def _risk_consistent(
-    signal
-):
-
-    if not signal:
-        return False
-
-    entry = signal.get(
-        "entry"
-    )
-
-    stop = signal.get(
-        "stop"
-    )
-
-    tp1 = signal.get(
-        "tp1"
-    )
-
-    if (
-        entry is None
-        or stop is None
-        or tp1 is None
-    ):
-        return False
-
-    side = signal.get(
-        "side"
-    )
-
-    try:
-
-        entry = float(entry)
-        stop = float(stop)
-        tp1 = float(tp1)
-
-    except (
-        TypeError,
-        ValueError,
-    ):
-
-        return False
-
-    if side == "LONG":
-
-        if stop >= entry:
-            return False
-
-        if tp1 <= entry:
-            return False
-
-    elif side == "SHORT":
-
-        if stop <= entry:
-            return False
-
-        if tp1 >= entry:
-            return False
-
-    else:
-
-        return False
-
-    return True
-
-
-# ============================================================
-# STRATEGY THRESHOLD
-# ============================================================
-
-def _minimum_score(
-    market
-):
-
-    if market == "FUTURES":
-        return FUTURES_MIN_SCORE
-
-    if market == "SPOT":
-        return SPOT_MIN_SCORE
-
-    if market == "SCALPING":
-        return SCALPING_MIN_SCORE
-
-    return 999
-
-
-# ============================================================
-# FILTER
-# ============================================================
-
-def filter_signals(
-    signals
-):
-
-    result = []
-
-    for signal in signals:
-
-        if not _is_valid(
-            signal
-        ):
+        if not isinstance(signal, dict):
             continue
 
-        market = signal.get(
-            "market"
-        )
+        symbol = _symbol(signal)
+        direction = _direction(signal)
 
-        score = _score(
-            signal
-        )
-
-        minimum = _minimum_score(
-            market
-        )
-
-        if score < minimum:
+        if not symbol:
             continue
 
-        if not _risk_consistent(
-            signal
-        ):
+        if direction not in ("LONG", "SHORT", "BUY", "SELL"):
             continue
 
-        result.append(
-            signal
-        )
+        if direction == "BUY":
+            direction = "LONG"
 
-    return result
+        elif direction == "SELL":
+            direction = "SHORT"
 
+        item = dict(signal)
 
-# ============================================================
-# AGGREGATE
-# ============================================================
+        item["symbol"] = symbol
+        item["direction"] = direction
+        item["strategy"] = _strategy(signal)
+        item["_score"] = _score(signal)
+        item["_confidence"] = _confidence(signal)
 
-def aggregate(
-    signals
-):
+        valid.append(item)
 
-    """
-    Futures / Spot / Scalping sinyallerini
-    tek karar haline getirir.
+    # --------------------------------------------------------
+    # 2. GROUP BY SYMBOL
+    # --------------------------------------------------------
 
-    Aynı coin için:
+    grouped = {}
 
-        LONG + LONG + LONG
-            ->
-        güçlü consensus
+    for signal in valid:
 
-        LONG + SHORT
-            ->
-        conflict
+        symbol = signal["symbol"]
 
-    """
-
-    valid = filter_signals(
-        signals
-    )
-
-    if not valid:
-        return None
-
-    groups = _group_by_direction(
-        valid
-    )
-
-    long_signals = groups[
-        "LONG"
-    ]
-
-    short_signals = groups[
-        "SHORT"
-    ]
-
-    # ========================================================
-    # CONFLICT
-    # ========================================================
-
-    if (
-        long_signals
-        and short_signals
-    ):
-
-        long_quality = sum(
-            _quality(x)
-            for x in long_signals
-        )
-
-        short_quality = sum(
-            _quality(x)
-            for x in short_signals
-        )
-
-        difference = abs(
-            long_quality
-            -
-            short_quality
-        )
-
-        total = (
-            long_quality
-            +
-            short_quality
-        )
-
-        # İki yön birbirine çok yakınsa:
-        # İŞLEM YOK.
-        if (
-            total > 0
-            and difference / total < 0.25
-        ):
-
-            return {
-                "symbol":
-                    valid[0].get(
-                        "symbol"
-                    ),
-
-                "market":
-                    "AGGREGATED",
-
-                "side":
-                    "WAIT",
-
-                "score":
-                    0,
-
-                "confidence":
-                    0,
-
-                "status":
-                    "CONFLICT",
-
-                "reasons": [
-                    "LONG/SHORT conflict"
-                ],
-            }
-
-        if long_quality > short_quality:
-
-            selected_pool = (
-                long_signals
-            )
-
-        else:
-
-            selected_pool = (
-                short_signals
-            )
-
-    else:
-
-        if long_signals:
-
-            selected_pool = (
-                long_signals
-            )
-
-        elif short_signals:
-
-            selected_pool = (
-                short_signals
-            )
-
-        else:
-
-            return None
-
-    # ========================================================
-    # BEST
-    # ========================================================
-
-    selected = _best_signal(
-        selected_pool
-    )
-
-    if not selected:
-        return None
-
-    # ========================================================
-    # CONSENSUS
-    # ========================================================
-
-    side = selected.get(
-        "side"
-    )
-
-    confirmations = [
-        x
-        for x in valid
-        if x.get("side") == side
-    ]
-
-    agreement = len(
-        confirmations
-    )
-
-    # ========================================================
-    # CONFIDENCE
-    # ========================================================
-
-    confidence = (
-        _calculate_confidence(
-            selected,
-            valid
-        )
-    )
-
-    # ========================================================
-    # COPY RESULT
-    # ========================================================
-
-    result = dict(
-        selected
-    )
-
-    result.update({
-
-        "market":
-            "AGGREGATED",
-
-        "source_market":
-            selected.get(
-                "market"
-            ),
-
-        "confirmations":
-            agreement,
-
-        "confidence":
-            confidence,
-
-        "status":
-            "QUALIFIED",
-
-    })
-
-    # ========================================================
-    # REASONS
-    # ========================================================
-
-    reasons = list(
-        selected.get(
-            "reasons",
+        grouped.setdefault(
+            symbol,
             []
+        ).append(signal)
+
+    final = []
+
+    # --------------------------------------------------------
+    # 3. ANALYZE EACH COIN
+    # --------------------------------------------------------
+
+    for symbol, candidates in grouped.items():
+
+        longs = [
+            x for x in candidates
+            if x["direction"] == "LONG"
+        ]
+
+        shorts = [
+            x for x in candidates
+            if x["direction"] == "SHORT"
+        ]
+
+        long_score = sum(
+            x["_score"]
+            for x in longs
         )
-    )
 
-    for signal in confirmations:
-
-        market = signal.get(
-            "market"
+        short_score = sum(
+            x["_score"]
+            for x in shorts
         )
 
-        if market not in str(
-            reasons
-        ):
+        # ----------------------------------------------------
+        # CONFLICT FILTER
+        # ----------------------------------------------------
 
-            reasons.append(
-                f"{market} confirmation"
+        if longs and shorts:
+
+            difference = abs(
+                long_score - short_score
             )
 
-    result["reasons"] = reasons
+            # Yönler birbirine çok yakınsa işlem yok
+            if difference < 2.0:
 
-    return result
+                final.append({
+                    "symbol": symbol,
+                    "direction": "WAIT",
+                    "action": "NO_TRADE",
+                    "confidence": 0,
+                    "reason":
+                        "STRATEGY_CONFLICT",
+                    "strategies": [
+                        _strategy(x)
+                        for x in candidates
+                    ],
+                })
 
+                continue
 
-# ============================================================
-# MULTI-SYMBOL AGGREGATION
-# ============================================================
+        # ----------------------------------------------------
+        # SELECT DIRECTION
+        # ----------------------------------------------------
 
-def aggregate_many(
-    symbol_signals
-):
+        if long_score > short_score:
 
-    """
-    Birden fazla coin için:
+            direction = "LONG"
+            selected = longs
+            opposing = shorts
 
-        {
-            "BTCUSDT": [...],
-            "ETHUSDT": [...],
-            ...
-        }
+        elif short_score > long_score:
 
-    """
+            direction = "SHORT"
+            selected = shorts
+            opposing = longs
 
-    results = []
+        else:
 
-    for symbol, signals in (
-        symbol_signals.items()
-    ):
+            final.append({
+                "symbol": symbol,
+                "direction": "WAIT",
+                "action": "NO_TRADE",
+                "confidence": 0,
+                "reason": "NO_DIRECTIONAL_EDGE",
+            })
 
-        result = aggregate(
-            signals
+            continue
+
+        # ----------------------------------------------------
+        # BEST CANDIDATE
+        # ----------------------------------------------------
+
+        selected = sorted(
+            selected,
+            key=lambda x: (
+                x["_score"],
+                x["_confidence"]
+            ),
+            reverse=True,
         )
 
-        if result is None:
+        best = selected[0]
+
+        score = best["_score"]
+        confidence = best["_confidence"]
+
+        # ----------------------------------------------------
+        # AGREEMENT BONUS
+        # ----------------------------------------------------
+
+        agreement = len(selected)
+
+        if agreement >= 2:
+            confidence += 5
+
+        if agreement >= 3:
+            confidence += 5
+
+        # Opposing strategy varsa güven azalt
+        if opposing:
+            confidence -= 10
+
+        confidence = max(
+            0,
+            min(100, confidence)
+        )
+
+        # ----------------------------------------------------
+        # MINIMUM QUALITY FILTER
+        # ----------------------------------------------------
+
+        if (
+            score < min_score
+            or confidence < min_confidence
+        ):
+
+            final.append({
+                "symbol": symbol,
+                "direction": "WAIT",
+                "action": "NO_TRADE",
+                "confidence": round(
+                    confidence,
+                    1
+                ),
+                "score": round(
+                    score,
+                    2
+                ),
+                "reason":
+                    "QUALITY_FILTER",
+                "best_strategy":
+                    best["strategy"],
+            })
+
             continue
 
-        if result.get(
-            "side"
-        ) == "WAIT":
+        # ----------------------------------------------------
+        # FINAL CANDIDATE
+        # ----------------------------------------------------
 
-            continue
+        result = dict(best)
+
+        result.pop(
+            "_score",
+            None
+        )
+
+        result.pop(
+            "_confidence",
+            None
+        )
 
         result["symbol"] = symbol
-
-        results.append(
-            result
+        result["direction"] = direction
+        result["action"] = (
+            "LONG"
+            if direction == "LONG"
+            else "SHORT"
         )
 
-    # En yüksek confidence
-    # önce gelir.
-    results.sort(
+        result["confidence"] = round(
+            confidence,
+            1
+        )
+
+        result["agreement"] = agreement
+
+        result["strategies"] = [
+            _strategy(x)
+            for x in selected
+        ]
+
+        result["aggregated"] = True
+
+        final.append(result)
+
+    # --------------------------------------------------------
+    # 4. SORT BEST FIRST
+    # --------------------------------------------------------
+
+    final.sort(
         key=lambda x: (
-            x.get(
-                "confidence",
-                0
+            float(
+                x.get(
+                    "confidence",
+                    0
+                )
             ),
-            x.get(
-                "score",
-                0
-            ),
-            x.get(
-                "confirmations",
-                0
+            float(
+                x.get(
+                    "score",
+                    0
+                )
             ),
         ),
         reverse=True,
     )
 
-    return results
+    return final
+
+
+def get_best_signal(
+    signals: List[Dict[str, Any]],
+    min_score: float = 6.0,
+    min_confidence: float = 60.0,
+):
+    """
+    Tek bir en iyi sinyali döndürür.
+    """
+
+    results = aggregate_signals(
+        signals,
+        min_score=min_score,
+        min_confidence=min_confidence,
+    )
+
+    tradable = [
+        x for x in results
+        if x.get("action")
+        in ("LONG", "SHORT")
+    ]
+
+    if not tradable:
+        return None
+
+    return tradable[0]
