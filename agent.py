@@ -1,18 +1,19 @@
 # ============================================================
-# CRYPTO RESEARCH AGENT
-# MAIN AGENT
+# CRYPTO TRADING AGENT
+# MAIN ORCHESTRATOR
 # ============================================================
 
-from config import (
-    CORE_COINS,
-    DISCOVERY_ENABLED,
-    MIN_24H_VOLUME_USDT,
-)
+from config import CORE_COINS, DISCOVERY_ENABLED
 
 from market.data_engine import (
     get_multi_timeframe_data,
-    discover_usdt_markets,
     get_price,
+    get_usdt_tickers,
+)
+
+from strategies.scanner import (
+    scan_market,
+    print_scanner_report,
 )
 
 from strategies.futures import (
@@ -27,22 +28,16 @@ from strategies.scalping import (
     analyze_scalping,
 )
 
-from strategies.scanner import (
-    scan_market,
-    print_scanner_report,
-)
-
 from engine.aggregator import (
-    aggregate,
+    aggregate_signals,
 )
 
 from engine.risk import (
-    apply_risk,
-    risk_rejection_reason,
+    get_final_signal,
 )
 
 from engine.paper import (
-    PaperTradingEngine,
+    PaperTrader,
 )
 
 
@@ -50,410 +45,36 @@ from engine.paper import (
 # SETTINGS
 # ============================================================
 
-PAPER_BALANCE = 1000.0
-
-DISCOVERY_LIMIT = 10
+STARTING_BALANCE = 1000.0
 
 DATA_LIMIT = 200
 
-MAX_SIGNALS_PER_RUN = 10
+DISCOVERY_LIMIT = 10
+
+MAX_SIGNALS = 10
 
 
 # ============================================================
-# PRINT
+# CORE COINS
 # ============================================================
 
-def print_header():
+def normalize_core_coins():
 
-    print()
-    print("=" * 80)
-    print(
-        "CRYPTO RESEARCH AGENT"
-    )
-    print(
-        "MULTI STRATEGY / PAPER TRADING"
-    )
-    print("=" * 80)
+    result = []
 
+    for coin in CORE_COINS:
 
-# ============================================================
-# SIGNAL REPORT
-# ============================================================
+        symbol = str(
+            coin
+        ).upper()
 
-def print_signal(
-    signal
-):
+        if not symbol.endswith("USDT"):
+            symbol += "USDT"
 
-    if not signal:
-        return
+        if symbol not in result:
+            result.append(symbol)
 
-    print()
-    print("-" * 80)
-
-    print(
-        f"SYMBOL      : "
-        f"{signal.get('symbol')}"
-    )
-
-    print(
-        f"MARKET      : "
-        f"{signal.get('market')}"
-    )
-
-    print(
-        f"SIDE        : "
-        f"{signal.get('side')}"
-    )
-
-    print(
-        f"ENTRY       : "
-        f"{signal.get('entry', 0):.8f}"
-    )
-
-    print(
-        f"STOP        : "
-        f"{signal.get('stop', 0):.8f}"
-    )
-
-    print(
-        f"TP1         : "
-        f"{signal.get('tp1', 0):.8f}"
-    )
-
-    print(
-        f"TP2         : "
-        f"{signal.get('tp2', 0):.8f}"
-    )
-
-    print(
-        f"R/R         : "
-        f"{signal.get('rr', 0):.2f}"
-    )
-
-    print(
-        f"SCORE       : "
-        f"{signal.get('score', 0)}"
-    )
-
-    print(
-        f"CONFIDENCE  : "
-        f"{signal.get('confidence', 0):.1f}%"
-    )
-
-    print(
-        f"STATUS      : "
-        f"{signal.get('status', 'N/A')}"
-    )
-
-    if "risk_status" in signal:
-
-        print(
-            f"RISK        : "
-            f"{signal.get('risk_status')}"
-        )
-
-        print(
-            f"RISK %      : "
-            f"{signal.get('risk_percent', 0):.2f}%"
-        )
-
-        print(
-            f"POSITION    : "
-            f"{signal.get('position_percent', 0):.2f}%"
-        )
-
-        print(
-            f"QUANTITY    : "
-            f"{signal.get('quantity', 0):.8f}"
-        )
-
-    reasons = signal.get(
-        "reasons",
-        []
-    )
-
-    if reasons:
-
-        print()
-        print("REASONS:")
-
-        for reason in reasons:
-
-            print(
-                f"  + {reason}"
-            )
-
-    print("-" * 80)
-
-
-# ============================================================
-# ANALYZE SYMBOL
-# ============================================================
-
-def analyze_symbol(
-    symbol,
-    paper_engine,
-):
-    """
-    Tek coin için:
-
-        Data
-         ↓
-        Futures
-         ↓
-        Spot
-         ↓
-        Scalping
-         ↓
-        Aggregator
-         ↓
-        Risk
-         ↓
-        Paper
-
-    """
-
-    print()
-    print(
-        f"[ANALYZE] {symbol}"
-    )
-
-    # ========================================================
-    # DATA
-    # ========================================================
-
-    try:
-
-        data = get_multi_timeframe_data(
-
-            symbol,
-
-            timeframes=[
-                "4h",
-                "1h",
-                "15m",
-                "5m",
-                "1m",
-            ],
-
-            limit=DATA_LIMIT,
-
-        )
-
-    except Exception as exc:
-
-        print(
-            f"DATA ERROR: {exc}"
-        )
-
-        return None
-
-    if not data:
-        return None
-
-    # ========================================================
-    # FUTURES
-    # ========================================================
-
-    try:
-
-        futures_signal = analyze_futures(
-            symbol,
-            data
-        )
-
-    except Exception as exc:
-
-        print(
-            f"FUTURES ERROR: {exc}"
-        )
-
-        futures_signal = None
-
-    # ========================================================
-    # SPOT
-    # ========================================================
-
-    try:
-
-        spot_signal = analyze_spot(
-            symbol,
-            data
-        )
-
-    except Exception as exc:
-
-        print(
-            f"SPOT ERROR: {exc}"
-        )
-
-        spot_signal = None
-
-    # ========================================================
-    # SCALPING
-    # ========================================================
-
-    try:
-
-        scalping_signal = analyze_scalping(
-            symbol,
-            data
-        )
-
-    except Exception as exc:
-
-        print(
-            f"SCALPING ERROR: {exc}"
-        )
-
-        scalping_signal = None
-
-    # ========================================================
-    # PRINT RAW SIGNALS
-    # ========================================================
-
-    raw_signals = []
-
-    if futures_signal:
-        raw_signals.append(
-            futures_signal
-        )
-
-    if spot_signal:
-        raw_signals.append(
-            spot_signal
-        )
-
-    if scalping_signal:
-        raw_signals.append(
-            scalping_signal
-        )
-
-    for signal in raw_signals:
-
-        if signal.get(
-            "side"
-        ) != "WAIT":
-
-            print_signal(
-                signal
-            )
-
-    # ========================================================
-    # AGGREGATOR
-    # ========================================================
-
-    try:
-
-        aggregated = aggregate(
-            raw_signals
-        )
-
-    except Exception as exc:
-
-        print(
-            f"AGGREGATOR ERROR: {exc}"
-        )
-
-        return None
-
-    if not aggregated:
-
-        print(
-            f"[{symbol}] "
-            f"No qualified consensus."
-        )
-
-        return None
-
-    if aggregated.get(
-        "side"
-    ) == "WAIT":
-
-        print(
-            f"[{symbol}] "
-            f"Aggregator: WAIT"
-        )
-
-        return None
-
-    print()
-    print(
-        f"[{symbol}] "
-        f"AGGREGATED SIGNAL"
-    )
-
-    print_signal(
-        aggregated
-    )
-
-    # ========================================================
-    # RISK
-    # ========================================================
-
-    approved = apply_risk(
-        aggregated,
-        PAPER_BALANCE
-    )
-
-    if not approved:
-
-        reason = risk_rejection_reason(
-            aggregated
-        )
-
-        print(
-            f"[{symbol}] "
-            f"RISK REJECTED: "
-            f"{reason}"
-        )
-
-        return None
-
-    # ========================================================
-    # APPROVED
-    # ========================================================
-
-    print()
-    print(
-        f"[{symbol}] "
-        f"RISK APPROVED"
-    )
-
-    print_signal(
-        approved
-    )
-
-    # ========================================================
-    # PAPER POSITION
-    # ========================================================
-
-    position = (
-        paper_engine.open_position(
-            approved
-        )
-    )
-
-    if position:
-
-        print()
-        print(
-            f"[PAPER OPEN] "
-            f"{symbol} "
-            f"{position['side']} "
-            f"@ "
-            f"{position['entry']}"
-        )
-
-    else:
-
-        print(
-            f"[PAPER] "
-            f"Position not opened "
-            f"(duplicate/max positions)"
-        )
-
-    return approved
+    return result
 
 
 # ============================================================
@@ -462,115 +83,336 @@ def analyze_symbol(
 
 def discover_symbols():
 
-    if not DISCOVERY_ENABLED:
+    core = normalize_core_coins()
 
-        return []
+    symbols = list(core)
+
+    if not DISCOVERY_ENABLED:
+        return symbols
 
     try:
 
+        tickers = get_usdt_tickers()
+
         candidates = scan_market(
-            limit=DISCOVERY_LIMIT
+            tickers=tickers,
+            core_coins=core,
+            limit=DISCOVERY_LIMIT,
         )
 
         print_scanner_report(
             candidates
         )
 
-        return [
-            x["symbol"]
-            for x in candidates
-            if x.get("symbol")
-        ]
+        for candidate in candidates:
+
+            symbol = candidate.get(
+                "symbol"
+            )
+
+            if (
+                symbol
+                and symbol not in symbols
+            ):
+
+                symbols.append(symbol)
 
     except Exception as exc:
 
         print(
-            f"DISCOVERY ERROR: {exc}"
+            f"[DISCOVERY ERROR] {exc}"
         )
-
-        return []
-
-
-# ============================================================
-# BUILD SYMBOL LIST
-# ============================================================
-
-def build_symbol_list():
-
-    symbols = list(
-        CORE_COINS
-    )
-
-    discovered = (
-        discover_symbols()
-    )
-
-    for symbol in discovered:
-
-        if symbol not in symbols:
-
-            symbols.append(
-                symbol
-            )
 
     return symbols
 
 
 # ============================================================
-# UPDATE PAPER PRICES
+# DATA
 # ============================================================
 
-def update_paper_positions(
-    paper_engine
-):
+def load_data(symbol):
 
-    positions = (
-        paper_engine
-        .get_open_positions()
-    )
+    try:
 
-    if not positions:
-        return
-
-    prices = {}
-
-    for position in positions:
-
-        symbol = position[
-            "symbol"
-        ]
-
-        try:
-
-            prices[symbol] = (
-                get_price(
-                    symbol
-                )
-            )
-
-        except Exception as exc:
-
-            print(
-                f"PRICE ERROR "
-                f"{symbol}: "
-                f"{exc}"
-            )
-
-    if not prices:
-        return
-
-    events = (
-        paper_engine.update_all(
-            prices
+        return get_multi_timeframe_data(
+            symbol=symbol,
+            timeframes=[
+                "4h",
+                "1h",
+                "15m",
+                "5m",
+                "1m",
+            ],
+            limit=DATA_LIMIT,
         )
-    )
 
-    for event in events:
+    except Exception as exc:
 
         print(
-            f"[PAPER EVENT] "
-            f"{event}"
+            f"[DATA ERROR] "
+            f"{symbol}: {exc}"
         )
+
+        return {}
+
+
+# ============================================================
+# BTC REGIME
+# ============================================================
+
+def get_btc_regime():
+
+    try:
+
+        data = load_data(
+            "BTCUSDT"
+        )
+
+        df = data.get(
+            "1h"
+        )
+
+        if df is None or len(df) < 50:
+            return "UNKNOWN"
+
+        close = float(
+            df["close"].iloc[-1]
+        )
+
+        ema20 = (
+            df["close"]
+            .ewm(
+                span=20,
+                adjust=False
+            )
+            .mean()
+            .iloc[-1]
+        )
+
+        ema50 = (
+            df["close"]
+            .ewm(
+                span=50,
+                adjust=False
+            )
+            .mean()
+            .iloc[-1]
+        )
+
+        if close > ema20 > ema50:
+            return "LONG"
+
+        if close < ema20 < ema50:
+            return "SHORT"
+
+        return "NEUTRAL"
+
+    except Exception as exc:
+
+        print(
+            f"[BTC REGIME ERROR] "
+            f"{exc}"
+        )
+
+        return "UNKNOWN"
+
+
+# ============================================================
+# ANALYZE ONE SYMBOL
+# ============================================================
+
+def analyze_symbol(
+    symbol,
+    btc_regime,
+):
+
+    print()
+    print(
+        f"[ANALYZE] {symbol}"
+    )
+
+    data = load_data(
+        symbol
+    )
+
+    if not data:
+        return []
+
+    signals = []
+
+    # ========================================================
+    # FUTURES
+    # ========================================================
+
+    try:
+
+        df_1h = data.get(
+            "1h"
+        )
+
+        if df_1h is not None:
+
+            signal = analyze_futures(
+                df=df_1h,
+                symbol=symbol,
+                btc_regime=btc_regime,
+            )
+
+            if signal:
+                signals.append(
+                    signal
+                )
+
+    except Exception as exc:
+
+        print(
+            f"[FUTURES ERROR] "
+            f"{symbol}: {exc}"
+        )
+
+    # ========================================================
+    # SPOT
+    # ========================================================
+
+    try:
+
+        df_4h = data.get(
+            "4h"
+        )
+
+        if df_4h is not None:
+
+            signal = analyze_spot(
+                df=df_4h,
+                symbol=symbol,
+                btc_regime=btc_regime,
+            )
+
+            if signal:
+                signals.append(
+                    signal
+                )
+
+    except Exception as exc:
+
+        print(
+            f"[SPOT ERROR] "
+            f"{symbol}: {exc}"
+        )
+
+    # ========================================================
+    # SCALPING
+    # ========================================================
+
+    try:
+
+        signal = analyze_scalping(
+            data=data,
+            symbol=symbol,
+            btc_regime=btc_regime,
+        )
+
+        if signal:
+            signals.append(
+                signal
+            )
+
+    except Exception as exc:
+
+        print(
+            f"[SCALPING ERROR] "
+            f"{symbol}: {exc}"
+        )
+
+    return signals
+
+
+# ============================================================
+# SIGNAL SUMMARY
+# ============================================================
+
+def print_signal(
+    signal
+):
+
+    print()
+    print(
+        "-" * 70
+    )
+
+    print(
+        f"SYMBOL      : "
+        f"{signal.get('symbol')}"
+    )
+
+    print(
+        f"STRATEGY    : "
+        f"{signal.get('strategy')}"
+    )
+
+    print(
+        f"DIRECTION   : "
+        f"{signal.get('direction')}"
+    )
+
+    print(
+        f"ENTRY       : "
+        f"{signal.get('entry')}"
+    )
+
+    print(
+        f"STOP        : "
+        f"{signal.get('stop')}"
+    )
+
+    print(
+        f"TP1         : "
+        f"{signal.get('tp1')}"
+    )
+
+    print(
+        f"TP2         : "
+        f"{signal.get('tp2')}"
+    )
+
+    print(
+        f"R/R         : "
+        f"{signal.get('rr')}"
+    )
+
+    print(
+        f"SCORE       : "
+        f"{signal.get('score')}"
+    )
+
+    print(
+        f"CONFIDENCE  : "
+        f"{signal.get('confidence')}%"
+    )
+
+    print(
+        f"MSB         : "
+        f"{signal.get('msb', False)}"
+    )
+
+    print(
+        f"CHoCH       : "
+        f"{signal.get('choch', False)}"
+    )
+
+    print(
+        f"SWEEP       : "
+        f"{signal.get('liquidity_sweep', False)}"
+    )
+
+    print(
+        f"FVG         : "
+        f"{bool(signal.get('fvg'))}"
+    )
+
+    print(
+        "-" * 70
+    )
 
 
 # ============================================================
@@ -579,147 +421,203 @@ def update_paper_positions(
 
 def main():
 
-    print_header()
+    print()
+    print("=" * 80)
+    print(
+        "CRYPTO TRADING AGENT"
+    )
+    print(
+        "FUTURES + SPOT + SCALPING"
+    )
+    print("=" * 80)
 
     # ========================================================
-    # PAPER ENGINE
+    # PAPER TRADER
     # ========================================================
 
-    paper_engine = (
-        PaperTradingEngine(
-            PAPER_BALANCE
-        )
+    paper = PaperTrader(
+        STARTING_BALANCE
+    )
+
+    # ========================================================
+    # BTC REGIME
+    # ========================================================
+
+    btc_regime = get_btc_regime()
+
+    print()
+    print(
+        f"BTC REGIME: "
+        f"{btc_regime}"
     )
 
     # ========================================================
     # SYMBOLS
     # ========================================================
 
-    symbols = (
-        build_symbol_list()
-    )
+    symbols = discover_symbols()
 
     print()
     print(
-        f"Total symbols: "
+        f"SYMBOLS: "
         f"{len(symbols)}"
     )
 
-    print(
-        f"Core coins: "
-        f"{len(CORE_COINS)}"
-    )
-
     # ========================================================
-    # ANALYSIS
+    # COLLECT SIGNALS
     # ========================================================
 
-    approved_signals = []
+    all_signals = []
 
     for symbol in symbols:
 
         try:
 
-            signal = analyze_symbol(
-
+            signals = analyze_symbol(
                 symbol,
-
-                paper_engine
-
+                btc_regime,
             )
 
-            if signal:
+            for signal in signals:
 
-                approved_signals.append(
-                    signal
-                )
+                if signal.get(
+                    "direction"
+                ) != "WAIT":
+
+                    all_signals.append(
+                        signal
+                    )
 
         except Exception as exc:
 
             print(
-                f"MAIN ERROR "
-                f"{symbol}: "
-                f"{exc}"
+                f"[ERROR] "
+                f"{symbol}: {exc}"
             )
 
     # ========================================================
-    # LIMIT SIGNALS
+    # AGGREGATE
     # ========================================================
 
-    approved_signals.sort(
-
-        key=lambda x: (
-
-            x.get(
-                "confidence",
-                0
-            ),
-
-            x.get(
-                "score",
-                0
-            ),
-
-        ),
-
-        reverse=True,
-
+    aggregated = aggregate_signals(
+        all_signals,
+        min_score=6,
+        min_confidence=60,
     )
 
-    approved_signals = (
-        approved_signals[
-            :MAX_SIGNALS_PER_RUN
+    # ========================================================
+    # RISK FILTER
+    # ========================================================
+
+    final_signals = []
+
+    for signal in aggregated:
+
+        if signal.get(
+            "direction"
+        ) == "WAIT":
+
+            continue
+
+        result = get_final_signal(
+            [signal],
+            btc_regime=btc_regime,
+            min_confidence=60,
+            min_rr=1.8,
+        )
+
+        if result:
+
+            final_signals.append(
+                result
+            )
+
+    # ========================================================
+    # RANK
+    # ========================================================
+
+    final_signals.sort(
+        key=lambda x: (
+            float(
+                x.get(
+                    "confidence",
+                    0
+                )
+            ),
+            float(
+                x.get(
+                    "rr",
+                    0
+                )
+            ),
+        ),
+        reverse=True,
+    )
+
+    final_signals = (
+        final_signals[
+            :MAX_SIGNALS
         ]
     )
 
     # ========================================================
-    # UPDATE POSITIONS
-    # ========================================================
-
-    update_paper_positions(
-        paper_engine
-    )
-
-    # ========================================================
-    # FINAL REPORT
+    # PRINT
     # ========================================================
 
     print()
     print("=" * 80)
     print(
-        "FINAL SIGNAL SUMMARY"
+        "FINAL SIGNALS"
     )
     print("=" * 80)
 
-    if not approved_signals:
+    if not final_signals:
 
         print(
-            "Bu taramada onaylanmış "
-            "işlem bulunamadı."
+            "No qualified signals."
         )
 
-    else:
+    for signal in final_signals:
 
-        for signal in (
-            approved_signals
-        ):
+        print_signal(
+            signal
+        )
 
-            print(
-                f"{signal.get('symbol')} | "
-                f"{signal.get('side')} | "
-                f"Confidence="
-                f"{signal.get('confidence', 0):.1f}% | "
-                f"Score="
-                f"{signal.get('score', 0)} | "
-                f"Entry="
-                f"{signal.get('entry', 0):.8f}"
-            )
+        # ----------------------------------------------------
+        # PAPER ENTRY
+        # ----------------------------------------------------
+
+        result = paper.open_position(
+            symbol=signal["symbol"],
+            side=signal["direction"],
+            entry=signal["entry"],
+            stop=signal["stop"],
+            tp1=signal["tp1"],
+            tp2=signal["tp2"],
+            risk_amount=(
+                paper.balance * 0.01
+            ),
+        )
+
+        print(
+            f"PAPER: "
+            f"{result}"
+        )
 
     # ========================================================
-    # PAPER REPORT
+    # PAPER STATUS
     # ========================================================
 
-    paper_engine.report()
+    print()
+    print("=" * 80)
+    print(
+        "PAPER ACCOUNT"
+    )
+    print("=" * 80)
+
+    print(
+        paper.status()
+    )
 
 
 # ============================================================
@@ -727,5 +625,4 @@ def main():
 # ============================================================
 
 if __name__ == "__main__":
-
     main()
