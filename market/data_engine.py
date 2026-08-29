@@ -3,580 +3,120 @@
 # MARKET DATA ENGINE
 # ============================================================
 
-import json
 import time
-import urllib.parse
-import urllib.request
-import urllib.error
+import requests
+import pandas as pd
 
-from config import (
-    QUOTE_ASSET,
-    CORE_SYMBOLS,
-    EXCLUDED_SYMBOLS,
-    DISCOVERY_MAX_SYMBOLS,
-    MIN_24H_QUOTE_VOLUME_USDT,
-    MIN_PRICE_USDT,
-    REQUEST_TIMEOUT,
-    REQUEST_DELAY_SECONDS,
-    MAX_RETRIES,
-    CACHE_ENABLED,
-    CACHE_SECONDS,
-    KLINE_LIMIT_4H,
-    KLINE_LIMIT_1H,
-    KLINE_LIMIT_15M,
-    KLINE_LIMIT_5M,
-    KLINE_LIMIT_1M,
-)
+
+BINANCE_BASE_URL = "https://api.binance.com"
 
 
 # ------------------------------------------------------------
-# BINANCE ENDPOINTS
+# HTTP
 # ------------------------------------------------------------
 
-SPOT_BASE_URL = "https://api.binance.com"
+def _get(endpoint, params=None, timeout=10):
+    url = BINANCE_BASE_URL + endpoint
 
-FUTURES_BASE_URL = "https://fapi.binance.com"
-
-
-# ------------------------------------------------------------
-# MEMORY CACHE
-# ------------------------------------------------------------
-
-_CACHE = {}
-
-
-# ------------------------------------------------------------
-# RATE LIMIT CONTROL
-# ------------------------------------------------------------
-
-_LAST_REQUEST_TIME = 0
-
-
-def _respect_rate_limit():
-    """
-    Binance API istekleri arasında minimum bekleme.
-    """
-
-    global _LAST_REQUEST_TIME
-
-    now = time.time()
-
-    elapsed = now - _LAST_REQUEST_TIME
-
-    if elapsed < REQUEST_DELAY_SECONDS:
-        time.sleep(REQUEST_DELAY_SECONDS - elapsed)
-
-    _LAST_REQUEST_TIME = time.time()
-
-
-# ------------------------------------------------------------
-# HTTP REQUEST
-# ------------------------------------------------------------
-
-def _request_json(url):
-    """
-    Binance API'den JSON veri alır.
-
-    429 durumunda exponential backoff uygular.
-    """
-
-    cache_key = url
-
-    if CACHE_ENABLED:
-        cached = _CACHE.get(cache_key)
-
-        if cached:
-            timestamp, data = cached
-
-            if time.time() - timestamp < CACHE_SECONDS:
-                return data
-
-    last_error = None
-
-    for attempt in range(MAX_RETRIES):
-
-        try:
-
-            _respect_rate_limit()
-
-            request = urllib.request.Request(
-                url,
-                headers={
-                    "User-Agent": "CryptoResearchAgent/2.0"
-                }
-            )
-
-            with urllib.request.urlopen(
-                request,
-                timeout=REQUEST_TIMEOUT
-            ) as response:
-
-                raw = response.read().decode("utf-8")
-
-                data = json.loads(raw)
-
-                if CACHE_ENABLED:
-                    _CACHE[cache_key] = (
-                        time.time(),
-                        data
-                    )
-
-                return data
-
-        except urllib.error.HTTPError as e:
-
-            last_error = e
-
-            if e.code == 429:
-
-                wait_time = min(
-                    2 ** attempt,
-                    10
-                )
-
-                time.sleep(wait_time)
-
-                continue
-
-            if e.code == 418:
-
-                wait_time = min(
-                    5 * (attempt + 1),
-                    30
-                )
-
-                time.sleep(wait_time)
-
-                continue
-
-            raise
-
-        except Exception as e:
-
-            last_error = e
-
-            wait_time = min(
-                2 ** attempt,
-                8
-            )
-
-            time.sleep(wait_time)
-
-    raise RuntimeError(
-        f"Binance veri alınamadı: {last_error}"
+    response = requests.get(
+        url,
+        params=params or {},
+        timeout=timeout,
+        headers={
+            "User-Agent": "crypto-research-agent/1.0"
+        },
     )
 
-
-# ------------------------------------------------------------
-# SYMBOL NORMALIZATION
-# ------------------------------------------------------------
-
-def normalize_symbol(symbol):
-    """
-    BTC -> BTCUSDT
-    BTCUSDT -> BTCUSDT
-    """
-
-    symbol = symbol.upper()
-
-    if symbol.endswith(QUOTE_ASSET):
-        return symbol
-
-    return symbol + QUOTE_ASSET
+    response.raise_for_status()
+    return response.json()
 
 
 # ------------------------------------------------------------
-# KLINE LIMIT
+# KLINE DATA
 # ------------------------------------------------------------
 
-def get_kline_limit(timeframe):
-    """
-    Timeframe'e göre uygun candle sayısı.
-    """
-
-    limits = {
-        "4h": KLINE_LIMIT_4H,
-        "1h": KLINE_LIMIT_1H,
-        "15m": KLINE_LIMIT_15M,
-        "5m": KLINE_LIMIT_5M,
-        "1m": KLINE_LIMIT_1M,
-    }
-
-    return limits.get(
-        timeframe,
-        300
-    )
-
-
-# ------------------------------------------------------------
-# SPOT KLINES
-# ------------------------------------------------------------
-
-def get_spot_klines(
+def get_klines(
     symbol,
-    timeframe="1h",
-    limit=None
+    interval="1h",
+    limit=200,
 ):
     """
-    Binance Spot OHLCV verisi.
+    Binance Spot OHLCV verisini DataFrame olarak döndürür.
+    """
 
-    Dönen yapı:
-
-    [
+    raw = _get(
+        "/api/v3/klines",
         {
-            "open_time": ...,
-            "open": ...,
-            "high": ...,
-            "low": ...,
-            "close": ...,
-            "volume": ...,
-            "close_time": ...
-        }
-    ]
-    """
-
-    symbol = normalize_symbol(symbol)
-
-    if limit is None:
-        limit = get_kline_limit(timeframe)
-
-    params = urllib.parse.urlencode({
-        "symbol": symbol,
-        "interval": timeframe,
-        "limit": limit,
-    })
-
-    url = (
-        f"{SPOT_BASE_URL}/api/v3/klines?"
-        f"{params}"
+            "symbol": symbol.upper(),
+            "interval": interval,
+            "limit": limit,
+        },
     )
 
-    raw_data = _request_json(url)
-
-    return _parse_klines(raw_data)
-
-
-# ------------------------------------------------------------
-# FUTURES KLINES
-# ------------------------------------------------------------
-
-def get_futures_klines(
-    symbol,
-    timeframe="1h",
-    limit=None
-):
-    """
-    Binance USDT-M Futures OHLCV verisi.
-    """
-
-    symbol = normalize_symbol(symbol)
-
-    if limit is None:
-        limit = get_kline_limit(timeframe)
-
-    params = urllib.parse.urlencode({
-        "symbol": symbol,
-        "interval": timeframe,
-        "limit": limit,
-    })
-
-    url = (
-        f"{FUTURES_BASE_URL}/fapi/v1/klines?"
-        f"{params}"
-    )
-
-    raw_data = _request_json(url)
-
-    return _parse_klines(raw_data)
-
-
-# ------------------------------------------------------------
-# KLINE PARSER
-# ------------------------------------------------------------
-
-def _parse_klines(raw_data):
-    """
-    Binance'ın ham candle formatını
-    sistemimizin standart formatına çevirir.
-    """
-
-    candles = []
-
-    for row in raw_data:
-
-        candles.append({
-            "open_time": int(row[0]),
-
-            "open": float(row[1]),
-
-            "high": float(row[2]),
-
-            "low": float(row[3]),
-
-            "close": float(row[4]),
-
-            "volume": float(row[5]),
-
-            "close_time": int(row[6]),
-
-            "quote_volume": float(row[7]),
-
-            "trades": int(row[8]),
-
-            "taker_buy_base": float(row[9]),
-
-            "taker_buy_quote": float(row[10]),
-        })
-
-    return candles
-
-
-# ------------------------------------------------------------
-# CURRENT PRICE
-# ------------------------------------------------------------
-
-def get_price(symbol):
-
-    symbol = normalize_symbol(symbol)
-
-    params = urllib.parse.urlencode({
-        "symbol": symbol
-    })
-
-    url = (
-        f"{SPOT_BASE_URL}/api/v3/ticker/price?"
-        f"{params}"
-    )
-
-    data = _request_json(url)
-
-    return float(data["price"])
-
-
-# ------------------------------------------------------------
-# 24H TICKER
-# ------------------------------------------------------------
-
-def get_24h_ticker(symbol):
-
-    symbol = normalize_symbol(symbol)
-
-    params = urllib.parse.urlencode({
-        "symbol": symbol
-    })
-
-    url = (
-        f"{SPOT_BASE_URL}/api/v3/ticker/24hr?"
-        f"{params}"
-    )
-
-    return _request_json(url)
-
-
-# ------------------------------------------------------------
-# ALL 24H TICKERS
-# ------------------------------------------------------------
-
-def get_all_24h_tickers():
-    """
-    Bütün Spot USDT marketlerinin 24h verisini
-    tek API isteğinde alır.
-
-    Bu özellikle 429 problemini azaltmak için önemli.
-    """
-
-    url = (
-        f"{SPOT_BASE_URL}/api/v3/ticker/24hr"
-    )
-
-    return _request_json(url)
-
-
-# ------------------------------------------------------------
-# MARKET DISCOVERY
-# ------------------------------------------------------------
-
-def discover_symbols(
-    max_symbols=None,
-    min_volume=None
-):
-    """
-    Piyasadaki likit USDT coinleri keşfeder.
-
-    Ana coin listesine bağlı kalmaz.
-    """
-
-    if max_symbols is None:
-        max_symbols = DISCOVERY_MAX_SYMBOLS
-
-    if min_volume is None:
-        min_volume = MIN_24H_QUOTE_VOLUME_USDT
-
-    tickers = get_all_24h_tickers()
-
-    candidates = []
-
-    for ticker in tickers:
-
-        symbol = ticker.get("symbol", "")
-
-        if not symbol.endswith(QUOTE_ASSET):
-            continue
-
-        if symbol in EXCLUDED_SYMBOLS:
-            continue
-
-        try:
-
-            price = float(
-                ticker.get("lastPrice", 0)
-            )
-
-            quote_volume = float(
-                ticker.get(
-                    "quoteVolume",
-                    0
-                )
-            )
-
-        except (TypeError, ValueError):
-
-            continue
-
-        if price < MIN_PRICE_USDT:
-            continue
-
-        if quote_volume < min_volume:
-            continue
-
-        candidates.append({
-            "symbol": symbol,
-            "price": price,
-            "quote_volume": quote_volume,
-            "change_24h": float(
-                ticker.get(
-                    "priceChangePercent",
-                    0
-                )
-            ),
-        })
-
-    # Hacme göre sırala
-    candidates.sort(
-        key=lambda x: x["quote_volume"],
-        reverse=True
-    )
-
-    # Sadece sembolleri döndür
-    return [
-        item["symbol"]
-        for item in candidates[:max_symbols]
+    if not raw:
+        return pd.DataFrame()
+
+    columns = [
+        "open_time",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "close_time",
+        "quote_volume",
+        "trades",
+        "taker_buy_base",
+        "taker_buy_quote",
+        "ignore",
     ]
 
+    df = pd.DataFrame(raw, columns=columns)
 
-# ------------------------------------------------------------
-# CORE + DISCOVERED SYMBOLS
-# ------------------------------------------------------------
+    numeric_columns = [
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "quote_volume",
+    ]
 
-def get_analysis_symbols():
-
-    discovered = discover_symbols()
-
-    result = []
-
-    # Önce ana coinler
-    for symbol in CORE_SYMBOLS:
-
-        symbol = normalize_symbol(symbol)
-
-        if symbol not in result:
-            result.append(symbol)
-
-    # Daha sonra keşfedilenler
-    for symbol in discovered:
-
-        if symbol not in result:
-            result.append(symbol)
-
-    return result
-
-
-# ------------------------------------------------------------
-# MARKET SNAPSHOT
-# ------------------------------------------------------------
-
-def get_market_snapshot(
-    symbol,
-    timeframe="1h",
-    market="spot"
-):
-    """
-    Tek coin için temel piyasa snapshot'ı.
-    """
-
-    symbol = normalize_symbol(symbol)
-
-    if market.lower() == "futures":
-
-        candles = get_futures_klines(
-            symbol,
-            timeframe
+    for column in numeric_columns:
+        df[column] = pd.to_numeric(
+            df[column],
+            errors="coerce",
         )
 
-    else:
+    df["open_time"] = pd.to_datetime(
+        df["open_time"],
+        unit="ms",
+        utc=True,
+    )
 
-        candles = get_spot_klines(
-            symbol,
-            timeframe
-        )
+    df["close_time"] = pd.to_datetime(
+        df["close_time"],
+        unit="ms",
+        utc=True,
+    )
 
-    if not candles:
-        raise RuntimeError(
-            f"{symbol} için candle verisi yok."
-        )
-
-    last = candles[-1]
-
-    return {
-        "symbol": symbol,
-
-        "timeframe": timeframe,
-
-        "price": last["close"],
-
-        "open": last["open"],
-
-        "high": last["high"],
-
-        "low": last["low"],
-
-        "volume": last["volume"],
-
-        "quote_volume": last["quote_volume"],
-
-        "candles": candles,
-    }
+    return df
 
 
 # ------------------------------------------------------------
-# MULTI TIMEFRAME DATA
+# MULTI-TIMEFRAME DATA
 # ------------------------------------------------------------
 
 def get_multi_timeframe_data(
     symbol,
-    market="spot",
-    timeframes=None
+    timeframes=None,
+    limit=200,
 ):
     """
-    4H -> 1H -> 15M -> 5M -> 1M
-    verilerini tek coin için toplar.
-
-    İleride bütün strateji motorları
-    bu fonksiyonu kullanacak.
+    Bir coin için birden fazla timeframe verisi getirir.
     """
 
     if timeframes is None:
-
         timeframes = [
             "4h",
             "1h",
@@ -589,124 +129,230 @@ def get_multi_timeframe_data(
 
     for timeframe in timeframes:
 
-        if market.lower() == "futures":
-
-            result[timeframe] = get_futures_klines(
+        try:
+            result[timeframe] = get_klines(
                 symbol,
-                timeframe
+                timeframe,
+                limit,
             )
 
-        else:
-
-            result[timeframe] = get_spot_klines(
-                symbol,
-                timeframe
+        except Exception as exc:
+            result[timeframe] = None
+            print(
+                f"{symbol} {timeframe} veri hatası: {exc}"
             )
+
+        # Binance API'ye gereksiz yük bindirmemek için
+        time.sleep(0.10)
 
     return result
 
 
 # ------------------------------------------------------------
-# MARKET DATA HEALTH CHECK
+# 24H TICKER
 # ------------------------------------------------------------
 
-def health_check():
+def get_24h_ticker(symbol):
+    """
+    Coin'in 24 saatlik piyasa verisini getirir.
+    """
+
+    data = _get(
+        "/api/v3/ticker/24hr",
+        {
+            "symbol": symbol.upper(),
+        },
+    )
+
+    return {
+        "symbol": data.get("symbol"),
+        "price": float(data.get("lastPrice", 0)),
+        "price_change_percent": float(
+            data.get("priceChangePercent", 0)
+        ),
+        "volume": float(
+            data.get("volume", 0)
+        ),
+        "quote_volume": float(
+            data.get("quoteVolume", 0)
+        ),
+        "high": float(
+            data.get("highPrice", 0)
+        ),
+        "low": float(
+            data.get("lowPrice", 0)
+        ),
+        "trades": int(
+            data.get("count", 0)
+        ),
+    }
+
+
+# ------------------------------------------------------------
+# ALL USDT SYMBOLS
+# ------------------------------------------------------------
+
+def get_usdt_symbols():
+    """
+    Binance'teki aktif USDT spot paritelerini döndürür.
+    """
+
+    exchange_info = _get(
+        "/api/v3/exchangeInfo"
+    )
+
+    symbols = []
+
+    for item in exchange_info.get(
+        "symbols",
+        [],
+    ):
+
+        if item.get("status") != "TRADING":
+            continue
+
+        if item.get("quoteAsset") != "USDT":
+            continue
+
+        symbols.append(
+            item.get("symbol")
+        )
+
+    return symbols
+
+
+# ------------------------------------------------------------
+# MARKET DISCOVERY
+# ------------------------------------------------------------
+
+def discover_usdt_markets(
+    min_volume_usdt=5_000_000,
+    limit=None,
+):
+    """
+    USDT piyasasını tarar.
+
+    Amaç:
+    Ana coinler dışında likiditesi yeterli
+    yeni fırsat adaylarını bulmak.
+    """
+
+    symbols = get_usdt_symbols()
+
+    candidates = []
+
+    for symbol in symbols:
+
+        try:
+
+            ticker = get_24h_ticker(
+                symbol
+            )
+
+            quote_volume = ticker[
+                "quote_volume"
+            ]
+
+            if quote_volume < min_volume_usdt:
+                continue
+
+            candidates.append(ticker)
+
+        except Exception:
+            continue
+
+    candidates.sort(
+        key=lambda x: x["quote_volume"],
+        reverse=True,
+    )
+
+    if limit is not None:
+        candidates = candidates[:limit]
+
+    return candidates
+
+
+# ------------------------------------------------------------
+# PRICE
+# ------------------------------------------------------------
+
+def get_price(symbol):
+    """
+    Anlık fiyat.
+    """
+
+    data = _get(
+        "/api/v3/ticker/price",
+        {
+            "symbol": symbol.upper(),
+        },
+    )
+
+    return float(
+        data["price"]
+    )
+
+
+# ------------------------------------------------------------
+# MARKET SNAPSHOT
+# ------------------------------------------------------------
+
+def get_market_snapshot(symbol):
+    """
+    Tek coin için temel piyasa özeti.
+    """
+
+    ticker = get_24h_ticker(
+        symbol
+    )
+
+    return {
+        "symbol": symbol.upper(),
+        "price": ticker["price"],
+        "change_24h": ticker[
+            "price_change_percent"
+        ],
+        "volume_24h": ticker[
+            "quote_volume"
+        ],
+        "high_24h": ticker["high"],
+        "low_24h": ticker["low"],
+        "trades_24h": ticker["trades"],
+    }
+
+
+# ------------------------------------------------------------
+# SAFE FETCH
+# ------------------------------------------------------------
+
+def safe_get_klines(
+    symbol,
+    interval,
+    limit=200,
+):
+    """
+    Veri alınamazsa programın tamamının
+    çökmesini engeller.
+    """
 
     try:
 
-        data = _request_json(
-            f"{SPOT_BASE_URL}/api/v3/ping"
+        df = get_klines(
+            symbol,
+            interval,
+            limit,
         )
 
-        return {
-            "status": "OK",
-            "message": "Binance bağlantısı başarılı.",
-            "data": data,
-        }
+        if df.empty:
+            return None
 
-    except Exception as e:
+        return df
 
-        return {
-            "status": "ERROR",
-            "message": str(e),
-        }
+    except Exception as exc:
 
+        print(
+            f"VERİ ALMA HATASI | "
+            f"{symbol} | {interval} | {exc}"
+        )
 
-# ------------------------------------------------------------
-# CACHE CONTROL
-# ------------------------------------------------------------
-
-def clear_cache():
-
-    _CACHE.clear()
-
-
-# ------------------------------------------------------------
-# TEST
-# ------------------------------------------------------------
-
-if __name__ == "__main__":
-
-    print("=" * 60)
-    print("MARKET DATA ENGINE TEST")
-    print("=" * 60)
-
-    health = health_check()
-
-    print()
-    print("Binance bağlantısı:")
-    print(health["status"])
-
-    if health["status"] == "OK":
-
-        print()
-        print("BTC fiyatı:")
-
-        try:
-
-            btc = get_price("BTCUSDT")
-
-            print(f"${btc:,.2f}")
-
-        except Exception as e:
-
-            print("HATA:", e)
-
-        print()
-        print("BTC 1H candle sayısı:")
-
-        try:
-
-            candles = get_spot_klines(
-                "BTCUSDT",
-                "1h",
-                10
-            )
-
-            print(len(candles))
-
-        except Exception as e:
-
-            print("HATA:", e)
-
-        print()
-        print("Market discovery:")
-
-        try:
-
-            symbols = discover_symbols(
-                max_symbols=10
-            )
-
-            print(
-                ", ".join(symbols)
-            )
-
-        except Exception as e:
-
-            print("HATA:", e)
-
-    print()
-    print("=" * 60)
-    print("TEST TAMAMLANDI")
-    print("=" * 60)
+        return None
