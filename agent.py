@@ -113,10 +113,11 @@ def discover_symbols():
         tickers = get_usdt_tickers()
 
         candidates = scan_market(
-            tickers=tickers,
-            core_coins=core,
-            limit=DISCOVERY_LIMIT,
-        )
+    tickers=tickers,
+    core_coins=core,
+    min_volume=MIN_DISCOVERY_VOLUME,
+    limit=DISCOVERY_LIMIT,
+)
 
         print_scanner_report(
             candidates
@@ -264,22 +265,24 @@ def analyze_symbol(
 
     try:
 
-        df_1h = data.get(
-            "1h"
+       if FUTURES_ENABLED:
+
+    df_1h = data.get(
+        "1h"
+    )
+
+    if df_1h is not None:
+
+        signal = analyze_futures(
+            df=df_1h,
+            symbol=symbol,
+            btc_regime=btc_regime,
         )
 
-        if df_1h is not None:
-
-            signal = analyze_futures(
-                df=df_1h,
-                symbol=symbol,
-                btc_regime=btc_regime,
-            )
-
-            if signal:
-                signals.append(
-                    signal
-                )
+        if signal:
+            signals.append(
+                signal
+            ) 
 
     except Exception as exc:
 
@@ -294,22 +297,25 @@ def analyze_symbol(
 
     try:
 
-        df_4h = data.get(
-            "4h"
+        if SPOT_ENABLED:
+
+    df_4h = data.get(
+        "4h"
+    )
+
+    if df_4h is not None:
+
+        signal = analyze_spot(
+            df=df_4h,
+            symbol=symbol,
+            btc_regime=btc_regime,
         )
 
-        if df_4h is not None:
-
-            signal = analyze_spot(
-                df=df_4h,
-                symbol=symbol,
-                btc_regime=btc_regime,
+        if signal:
+            signals.append(
+                signal
             )
-
-            if signal:
-                signals.append(
-                    signal
-                )
+        
 
     except Exception as exc:
 
@@ -324,16 +330,18 @@ def analyze_symbol(
 
     try:
 
-        signal = analyze_scalping(
-            data=data,
-            symbol=symbol,
-            btc_regime=btc_regime,
-        )
+        if SCALPING_ENABLED:
 
-        if signal:
-            signals.append(
-                signal
-            )
+    signal = analyze_scalping(
+        data=data,
+        symbol=symbol,
+        btc_regime=btc_regime,
+    )
+
+    if signal:
+        signals.append(
+            signal
+        )
 
     except Exception as exc:
 
@@ -518,10 +526,10 @@ def main():
     # ========================================================
 
     aggregated = aggregate_signals(
-        all_signals,
-        min_score=6,
-        min_confidence=60,
-    )
+    all_signals,
+    min_score=MIN_AGGREGATED_SCORE,
+    min_confidence=MIN_AGGREGATED_CONFIDENCE,
+)
 
     # ========================================================
     # RISK FILTER
@@ -613,8 +621,8 @@ def main():
             tp1=signal["tp1"],
             tp2=signal["tp2"],
             risk_amount=(
-                paper.balance * 0.01
-            ),
+    paper.balance * RISK_PER_TRADE
+),
         )
 
         print(
