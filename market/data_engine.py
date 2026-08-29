@@ -1,5 +1,4 @@
 # ============================================================
-# CRYPTO RESEARCH AGENT
 # MARKET DATA ENGINE
 # ============================================================
 
@@ -8,46 +7,54 @@ import requests
 import pandas as pd
 
 
-BINANCE_BASE_URL = "https://api.binance.com"
+BASE_URL = "https://api.binance.com"
+
+KLINE_ENDPOINT = (
+    "/api/v3/klines"
+)
+
+TICKER_ENDPOINT = (
+    "/api/v3/ticker/24hr"
+)
 
 
-# ------------------------------------------------------------
+# ============================================================
 # HTTP
-# ------------------------------------------------------------
+# ============================================================
 
-def _get(endpoint, params=None, timeout=10):
-    url = BINANCE_BASE_URL + endpoint
+def _get(
+    endpoint,
+    params=None,
+    timeout=15,
+):
 
     response = requests.get(
-        url,
-        params=params or {},
+        BASE_URL + endpoint,
+        params=params,
         timeout=timeout,
-        headers={
-            "User-Agent": "crypto-research-agent/1.0"
-        },
     )
 
     response.raise_for_status()
+
     return response.json()
 
 
-# ------------------------------------------------------------
-# KLINE DATA
-# ------------------------------------------------------------
+# ============================================================
+# KLINES
+# ============================================================
 
 def get_klines(
     symbol,
-    interval="1h",
+    interval,
     limit=200,
 ):
-    """
-    Binance Spot OHLCV verisini DataFrame olarak döndürür.
-    """
+
+    symbol = symbol.upper()
 
     raw = _get(
-        "/api/v3/klines",
+        KLINE_ENDPOINT,
         {
-            "symbol": symbol.upper(),
+            "symbol": symbol,
             "interval": interval,
             "limit": limit,
         },
@@ -71,7 +78,14 @@ def get_klines(
         "ignore",
     ]
 
-    df = pd.DataFrame(raw, columns=columns)
+    df = pd.DataFrame(
+        raw,
+        columns=columns,
+    )
+
+    # --------------------------------------------------------
+    # NUMERIC
+    # --------------------------------------------------------
 
     numeric_columns = [
         "open",
@@ -80,13 +94,21 @@ def get_klines(
         "close",
         "volume",
         "quote_volume",
+        "trades",
+        "taker_buy_base",
+        "taker_buy_quote",
     ]
 
     for column in numeric_columns:
+
         df[column] = pd.to_numeric(
             df[column],
             errors="coerce",
         )
+
+    # --------------------------------------------------------
+    # TIME
+    # --------------------------------------------------------
 
     df["open_time"] = pd.to_datetime(
         df["open_time"],
@@ -100,23 +122,29 @@ def get_klines(
         utc=True,
     )
 
+    # --------------------------------------------------------
+    # INDEX
+    # --------------------------------------------------------
+
+    df = df.set_index(
+        "open_time"
+    )
+
     return df
 
 
-# ------------------------------------------------------------
-# MULTI-TIMEFRAME DATA
-# ------------------------------------------------------------
+# ============================================================
+# MULTI TIMEFRAME
+# ============================================================
 
 def get_multi_timeframe_data(
     symbol,
     timeframes=None,
     limit=200,
 ):
-    """
-    Bir coin için birden fazla timeframe verisi getirir.
-    """
 
     if timeframes is None:
+
         timeframes = [
             "4h",
             "1h",
@@ -125,234 +153,220 @@ def get_multi_timeframe_data(
             "1m",
         ]
 
-    result = {}
+    data = {}
 
     for timeframe in timeframes:
 
         try:
-            result[timeframe] = get_klines(
+
+            data[timeframe] = get_klines(
                 symbol,
                 timeframe,
                 limit,
             )
 
         except Exception as exc:
-            result[timeframe] = None
+
             print(
-                f"{symbol} {timeframe} veri hatası: {exc}"
+                f"DATA ERROR "
+                f"{symbol} "
+                f"{timeframe}: "
+                f"{exc}"
             )
 
-        # Binance API'ye gereksiz yük bindirmemek için
+            data[timeframe] = pd.DataFrame()
+
+        # Binance API'yi gereksiz zorlamamak için
+        # küçük bekleme.
         time.sleep(0.10)
 
-    return result
+    return data
 
 
-# ------------------------------------------------------------
-# 24H TICKER
-# ------------------------------------------------------------
-
-def get_24h_ticker(symbol):
-    """
-    Coin'in 24 saatlik piyasa verisini getirir.
-    """
-
-    data = _get(
-        "/api/v3/ticker/24hr",
-        {
-            "symbol": symbol.upper(),
-        },
-    )
-
-    return {
-        "symbol": data.get("symbol"),
-        "price": float(data.get("lastPrice", 0)),
-        "price_change_percent": float(
-            data.get("priceChangePercent", 0)
-        ),
-        "volume": float(
-            data.get("volume", 0)
-        ),
-        "quote_volume": float(
-            data.get("quoteVolume", 0)
-        ),
-        "high": float(
-            data.get("highPrice", 0)
-        ),
-        "low": float(
-            data.get("lowPrice", 0)
-        ),
-        "trades": int(
-            data.get("count", 0)
-        ),
-    }
-
-
-# ------------------------------------------------------------
-# ALL USDT SYMBOLS
-# ------------------------------------------------------------
-
-def get_usdt_symbols():
-    """
-    Binance'teki aktif USDT spot paritelerini döndürür.
-    """
-
-    exchange_info = _get(
-        "/api/v3/exchangeInfo"
-    )
-
-    symbols = []
-
-    for item in exchange_info.get(
-        "symbols",
-        [],
-    ):
-
-        if item.get("status") != "TRADING":
-            continue
-
-        if item.get("quoteAsset") != "USDT":
-            continue
-
-        symbols.append(
-            item.get("symbol")
-        )
-
-    return symbols
-
-
-# ------------------------------------------------------------
-# MARKET DISCOVERY
-# ------------------------------------------------------------
-
-def discover_usdt_markets(
-    min_volume_usdt=5_000_000,
-    limit=None,
-):
-    """
-    USDT piyasasını tarar.
-
-    Amaç:
-    Ana coinler dışında likiditesi yeterli
-    yeni fırsat adaylarını bulmak.
-    """
-
-    symbols = get_usdt_symbols()
-
-    candidates = []
-
-    for symbol in symbols:
-
-        try:
-
-            ticker = get_24h_ticker(
-                symbol
-            )
-
-            quote_volume = ticker[
-                "quote_volume"
-            ]
-
-            if quote_volume < min_volume_usdt:
-                continue
-
-            candidates.append(ticker)
-
-        except Exception:
-            continue
-
-    candidates.sort(
-        key=lambda x: x["quote_volume"],
-        reverse=True,
-    )
-
-    if limit is not None:
-        candidates = candidates[:limit]
-
-    return candidates
-
-
-# ------------------------------------------------------------
+# ============================================================
 # PRICE
-# ------------------------------------------------------------
+# ============================================================
 
-def get_price(symbol):
-    """
-    Anlık fiyat.
-    """
+def get_price(
+    symbol,
+):
+
+    symbol = symbol.upper()
 
     data = _get(
-        "/api/v3/ticker/price",
+        TICKER_ENDPOINT,
         {
-            "symbol": symbol.upper(),
+            "symbol": symbol,
         },
     )
 
     return float(
-        data["price"]
+        data["lastPrice"]
     )
 
 
-# ------------------------------------------------------------
-# MARKET SNAPSHOT
-# ------------------------------------------------------------
+# ============================================================
+# ALL USDT MARKETS
+# ============================================================
 
-def get_market_snapshot(symbol):
-    """
-    Tek coin için temel piyasa özeti.
-    """
+def get_usdt_tickers():
 
-    ticker = get_24h_ticker(
-        symbol
+    raw = _get(
+        TICKER_ENDPOINT
     )
 
-    return {
-        "symbol": symbol.upper(),
-        "price": ticker["price"],
-        "change_24h": ticker[
-            "price_change_percent"
-        ],
-        "volume_24h": ticker[
-            "quote_volume"
-        ],
-        "high_24h": ticker["high"],
-        "low_24h": ticker["low"],
-        "trades_24h": ticker["trades"],
-    }
+    if not raw:
+        return []
+
+    return [
+        ticker
+        for ticker in raw
+        if str(
+            ticker.get(
+                "symbol",
+                ""
+            )
+        ).upper().endswith(
+            "USDT"
+        )
+    ]
 
 
-# ------------------------------------------------------------
-# SAFE FETCH
-# ------------------------------------------------------------
+# ============================================================
+# DISCOVER MARKETS
+# ============================================================
 
-def safe_get_klines(
+def discover_usdt_markets(
+    min_volume_usdt=10_000_000,
+    limit=50,
+):
+
+    tickers = get_usdt_tickers()
+
+    candidates = []
+
+    for ticker in tickers:
+
+        symbol = str(
+            ticker.get(
+                "symbol",
+                ""
+            )
+        ).upper()
+
+        if not symbol.endswith(
+            "USDT"
+        ):
+            continue
+
+        try:
+
+            volume = float(
+                ticker.get(
+                    "quoteVolume",
+                    0
+                )
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+
+            continue
+
+        if volume < min_volume_usdt:
+            continue
+
+        try:
+
+            price = float(
+                ticker.get(
+                    "lastPrice",
+                    0
+                )
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+
+            price = 0.0
+
+        try:
+
+            change = float(
+                ticker.get(
+                    "priceChangePercent",
+                    0
+                )
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+
+            change = 0.0
+
+        candidates.append({
+
+            "symbol":
+                symbol,
+
+            "price":
+                price,
+
+            "price_change_percent":
+                change,
+
+            "quote_volume":
+                volume,
+
+        })
+
+    # --------------------------------------------------------
+    # RANK BY VOLUME
+    # --------------------------------------------------------
+
+    candidates.sort(
+
+        key=lambda x:
+            x["quote_volume"],
+
+        reverse=True,
+
+    )
+
+    return candidates[:limit]
+
+
+# ============================================================
+# COMPATIBILITY
+# ============================================================
+
+def get_market_data(
     symbol,
-    interval,
+    timeframe="15m",
     limit=200,
 ):
-    """
-    Veri alınamazsa programın tamamının
-    çökmesini engeller.
-    """
 
-    try:
+    return get_klines(
+        symbol,
+        timeframe,
+        limit,
+    )
 
-        df = get_klines(
-            symbol,
-            interval,
-            limit,
-        )
 
-        if df.empty:
-            return None
+def fetch_ohlcv(
+    symbol,
+    timeframe="15m",
+    limit=200,
+):
 
-        return df
-
-    except Exception as exc:
-
-        print(
-            f"VERİ ALMA HATASI | "
-            f"{symbol} | {interval} | {exc}"
-        )
-
-        return None
+    return get_klines(
+        symbol,
+        timeframe,
+        limit,
+    )
