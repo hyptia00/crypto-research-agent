@@ -1,168 +1,125 @@
 import json
 import urllib.request
 
-COINS = (
-    "bitcoin,ethereum,solana,binancecoin,ripple,"
-    "jupiter-exchange-solana,moonriver,tensor,near,polkadot"
-)
-
-URL = (
-    "https://api.coingecko.com/api/v3/simple/price"
-    "?ids=" + COINS +
-    "&vs_currencies=usd"
-    "&include_24hr_change=true"
-    "&include_24hr_vol=true"
-    "&include_market_cap=true"
-)
-
-NAMES = {
-    "bitcoin": "BTC",
-    "ethereum": "ETH",
-    "solana": "SOL",
-    "binancecoin": "BNB",
-    "ripple": "XRP",
-    "jupiter-exchange-solana": "JUP",
-    "moonriver": "MOVR",
-    "tensor": "TNSR",
-    "near": "NEAR",
-    "polkadot": "DOT"
+COINS = {
+    "BTC": "bitcoin",
+    "ETH": "ethereum",
+    "SOL": "solana",
+    "BNB": "binancecoin",
+    "XRP": "ripple",
+    "DOT": "polkadot",
+    "NEAR": "near",
+    "JUP": "jupiter-exchange-solana",
+    "MOVR": "moonriver",
+    "TNSR": "tensor"
 }
 
 
-def get_data():
-    request = urllib.request.Request(
-        URL,
-        headers={"User-Agent": "Crypto-Research-Agent/1.0"}
+def get_prices(coin_id):
+    url = (
+        f"https://api.coingecko.com/api/v3/coins/"
+        f"{coin_id}/market_chart?vs_currency=usd&days=30"
     )
 
-    with urllib.request.urlopen(request, timeout=20) as response:
-        return json.loads(response.read().decode("utf-8"))
+    with urllib.request.urlopen(url, timeout=20) as response:
+        data = json.loads(response.read().decode())
+
+    return [x[1] for x in data["prices"]]
 
 
-try:
-    data = get_data()
+def ema(prices, period):
+    multiplier = 2 / (period + 1)
+    value = prices[0]
 
-    coins = []
+    for price in prices[1:]:
+        value = (price - value) * multiplier + value
 
-    for coin_id, symbol in NAMES.items():
+    return value
 
-        coin = data.get(coin_id)
 
-        if not coin:
-            continue
+def rsi(prices, period=14):
+    gains = []
+    losses = []
 
-        price = coin.get("usd", 0)
-        change = coin.get("usd_24h_change", 0)
-        volume = coin.get("usd_24h_vol", 0)
-        market_cap = coin.get("usd_market_cap", 0)
+    for i in range(1, len(prices)):
+        change = prices[i] - prices[i - 1]
 
-        coins.append({
-            "symbol": symbol,
-            "price": price,
-            "change": change,
-            "volume": volume,
-            "market_cap": market_cap
-        })
-
-    # 24 saatlik değişime göre sırala
-    by_change = sorted(
-        coins,
-        key=lambda x: x["change"],
-        reverse=True
-    )
-
-    # Hacme göre sırala
-    by_volume = sorted(
-        coins,
-        key=lambda x: x["volume"],
-        reverse=True
-    )
-
-    average_change = sum(
-        coin["change"] for coin in coins
-    ) / len(coins)
-
-    print("=" * 60)
-    print("CRYPTO RESEARCH AGENT")
-    print("=" * 60)
-
-    print("\n📊 24 SAATLİK PERFORMANS")
-    print("-" * 60)
-
-    for rank, coin in enumerate(by_change, 1):
-
-        change = coin["change"]
-
-        if change >= 3:
-            signal = "GÜÇLÜ POZİTİF"
-        elif change >= 0:
-            signal = "POZİTİF"
-        elif change > -3:
-            signal = "NEGATİF"
+        if change > 0:
+            gains.append(change)
+            losses.append(0)
         else:
-            signal = "GÜÇLÜ NEGATİF"
+            gains.append(0)
+            losses.append(abs(change))
 
-        print(
-            f"{rank:2}. {coin['symbol']:5} "
-            f"{change:+7.2f}%   "
-            f"${coin['price']:,.4f}   "
-            f"{signal}"
-        )
+    avg_gain = sum(gains[-period:]) / period
+    avg_loss = sum(losses[-period:]) / period
 
-    print("\n💰 HACİM SIRALAMASI")
-    print("-" * 60)
+    if avg_loss == 0:
+        return 100
 
-    for rank, coin in enumerate(by_volume, 1):
-        print(
-            f"{rank:2}. {coin['symbol']:5} "
-            f"${coin['volume']:,.0f}"
-        )
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
 
-    print("\n📈 PİYASA ÖZETİ")
-    print("-" * 60)
 
-    print(f"İzlenen coin sayısı : {len(coins)}")
-    print(f"Ortalama değişim    : {average_change:+.2f}%")
+def analyze(symbol, coin_id):
+    prices = get_prices(coin_id)
 
-    strongest = by_change[0]
-    weakest = by_change[-1]
-    highest_volume = by_volume[0]
+    price = prices[-1]
 
-    print(
-        f"En güçlü coin      : "
-        f"{strongest['symbol']} ({strongest['change']:+.2f}%)"
-    )
+    ema20 = ema(prices[-20:], 20)
+    ema50 = ema(prices[-50:], 50)
 
-    print(
-        f"En zayıf coin       : "
-        f"{weakest['symbol']} ({weakest['change']:+.2f}%)"
-    )
+    current_rsi = rsi(prices)
 
-    print(
-        f"En yüksek hacim     : "
-        f"{highest_volume['symbol']}"
-    )
+    ema12 = ema(prices[-12:], 12)
+    ema26 = ema(prices[-26:], 26)
+    macd = ema12 - ema26
 
-    print("\n🧠 İLK ANALİZ")
-
-    if average_change > 2:
-        print("Piyasa genel olarak güçlü pozitif momentum gösteriyor.")
-    elif average_change > 0:
-        print("Piyasa genel olarak pozitif bölgede.")
-    elif average_change > -2:
-        print("Piyasa genel olarak hafif negatif bölgede.")
+    if price > ema20 and ema20 > ema50:
+        trend = "YUKSELIS"
+    elif price < ema20 and ema20 < ema50:
+        trend = "DUSUS"
     else:
-        print("Piyasa genel olarak güçlü negatif momentum gösteriyor.")
+        trend = "KARARSIZ"
 
-    print("\n" + "=" * 60)
-    print("Araştırma tamamlandı.")
-    print("=" * 60)
+    if current_rsi >= 70:
+        momentum = "ASIRI ALIM"
+    elif current_rsi <= 30:
+        momentum = "ASIRI SATIM"
+    elif current_rsi < 45:
+        momentum = "ZAYIF"
+    elif current_rsi > 55:
+        momentum = "GUCLU"
+    else:
+        momentum = "NOTR"
+
+    if macd > 0:
+        macd_signal = "POZITIF"
+    else:
+        macd_signal = "NEGATIF"
+
+    print()
+    print("=" * 45)
+    print(symbol)
+    print("=" * 45)
+    print(f"Fiyat: ${price:,.4f}")
+    print(f"EMA20: ${ema20:,.4f}")
+    print(f"EMA50: ${ema50:,.4f}")
+    print(f"RSI14: {current_rsi:.2f}")
+    print(f"MACD: {macd:.6f}")
+    print(f"Trend: {trend}")
+    print(f"Momentum: {momentum}")
+    print(f"MACD Durumu: {macd_signal}")
 
 
-except Exception as e:
+print("=" * 45)
+print("CRYPTO RESEARCH AGENT")
+print("=" * 45)
 
-    print("=" * 60)
-    print("VERİ ALMA HATASI")
-    print("=" * 60)
-
-    print(e)
+for symbol, coin_id in COINS.items():
+    try:
+        analyze(symbol, coin_id)
+    except Exception as e:
+        print()
+        print(symbol)
+        print("VERI ALMA HATASI:", e)
