@@ -1,767 +1,445 @@
 # ============================================================
-# CRYPTO RESEARCH AGENT
 # SPOT STRATEGY ENGINE
 # ============================================================
 
-from market.indicators import (
-    calculate_indicators,
-    latest_indicators,
-)
+from typing import Any, Dict, Optional
 
-from market.structure import (
-    analyze_structure,
-)
+from market.indicators import calculate_indicators
+from market.structure import analyze_structure
 
 
-# ============================================================
-# SETTINGS
-# ============================================================
-
-MIN_SCORE = 7
-MIN_RR = 2.0
-
-ATR_STOP_MULTIPLIER = 1.5
-
-RSI_MIN = 40
-RSI_MAX = 70
+def _float(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
-# ============================================================
-# EMPTY SIGNAL
-# ============================================================
+def _get(df, name, default=0.0):
+    if df is None or len(df) == 0:
+        return default
 
-def _wait(symbol, score=0, reasons=None):
+    if name not in df.columns:
+        return default
 
-    return {
-        "symbol": symbol,
-        "market": "SPOT",
-        "side": "WAIT",
-        "score": score,
-        "confidence": 0,
-        "reasons": reasons or [],
-    }
+    return _float(df[name].iloc[-1], default)
 
 
-# ============================================================
-# TREND
-# ============================================================
+def _levels(price, atr):
 
-def _trend_score(indicator_data):
+    if atr <= 0:
+        atr = price * 0.01
 
-    if not indicator_data:
-        return 0
+    stop = price - (atr * 1.5)
+    tp1 = price + (atr * 2.0)
+    tp2 = price + (atr * 3.0)
 
-    price = indicator_data.get("price")
-    ema20 = indicator_data.get("ema20")
-    ema50 = indicator_data.get("ema50")
-
-    if (
-        price is None
-        or ema20 is None
-        or ema50 is None
-    ):
-        return 0
-
-    if price > ema20 > ema50:
-        return 3
-
-    if price > ema20:
-        return 1
-
-    return 0
+    return stop, tp1, tp2
 
 
-# ============================================================
-# RSI
-# ============================================================
+def analyze_spot(
+    df,
+    symbol: str,
+    btc_regime: Optional[str] = None,
+) -> Dict[str, Any]:
 
-def _rsi_score(indicator_data):
+    symbol = symbol.upper()
 
-    if not indicator_data:
-        return 0
+    if df is None or len(df) < 50:
 
-    value = indicator_data.get("rsi")
+        return {
+            "symbol": symbol,
+            "direction": "WAIT",
+            "action": "NO_TRADE",
+            "strategy": "SPOT",
+            "score": 0,
+            "confidence": 0,
+            "reason": "INSUFFICIENT_DATA",
+        }
 
-    if value is None:
-        return 0
+    # --------------------------------------------------------
+    # INDICATORS
+    # --------------------------------------------------------
 
-    if RSI_MIN <= value <= RSI_MAX:
-        return 1
+    try:
+        data = calculate_indicators(df)
+    except Exception:
+        data = df.copy()
 
-    return 0
+    # --------------------------------------------------------
+    # MARKET STRUCTURE
+    # --------------------------------------------------------
 
+    try:
+        structure = analyze_structure(data)
+    except Exception:
 
-# ============================================================
-# MACD
-# ============================================================
+        structure = {
+            "trend": "UNKNOWN",
+            "bos": False,
+            "choch": False,
+        }
 
-def _macd_score(indicator_data):
+    price = _get(data, "close")
 
-    if not indicator_data:
-        return 0
-
-    histogram = indicator_data.get(
-        "macd_hist"
+    ema20 = _get(
+        data,
+        "ema20",
+        _get(data, "EMA20")
     )
 
-    if histogram is None:
-        return 0
-
-    if histogram > 0:
-        return 1
-
-    return 0
-
-
-# ============================================================
-# VOLUME
-# ============================================================
-
-def _volume_score(indicator_data):
-
-    if not indicator_data:
-        return 0
-
-    ratio = indicator_data.get(
-        "volume_ratio"
+    ema50 = _get(
+        data,
+        "ema50",
+        _get(data, "EMA50")
     )
 
-    if ratio is None:
-        return 0
+    rsi = _get(
+        data,
+        "rsi",
+        _get(data, "RSI")
+    )
 
-    if ratio >= 1.5:
-        return 2
+    macd = _get(
+        data,
+        "macd",
+        _get(data, "MACD")
+    )
 
-    if ratio >= 1.0:
-        return 1
+    atr = _get(
+        data,
+        "atr",
+        _get(data, "ATR")
+    )
 
-    return 0
+    volume = _get(data, "volume")
 
+    trend = str(
+        structure.get(
+            "trend",
+            "UNKNOWN"
+        )
+    ).upper()
 
-# ============================================================
-# STRUCTURE
-# ============================================================
-
-def _structure_score(structure):
-
-    if not structure:
-        return 0, []
+    # --------------------------------------------------------
+    # SPOT SCORE
+    # --------------------------------------------------------
 
     score = 0
     reasons = []
 
     # --------------------------------------------------------
-    # BIAS
+    # TREND
     # --------------------------------------------------------
 
-    bias = structure.get(
-        "bias"
-    )
-
-    if bias == "BULLISH":
+    if trend in (
+        "UP",
+        "LONG",
+        "BULLISH"
+    ):
 
         score += 2
 
         reasons.append(
-            "Bullish market structure"
+            "bullish market structure"
         )
 
-    elif bias == "BEARISH":
+    elif trend in (
+        "DOWN",
+        "SHORT",
+        "BEARISH"
+    ):
 
-        # Spot için bearish yapı ciddi negatif.
-        score -= 3
+        score -= 2
 
         reasons.append(
-            "Bearish market structure"
+            "bearish market structure"
         )
 
     # --------------------------------------------------------
-    # BOS
+    # EMA
     # --------------------------------------------------------
 
-    for event in structure.get(
-        "bos",
-        []
-    )[-5:]:
+    if price > ema20 > ema50:
 
-        if event.get(
-            "direction"
-        ) == "BULLISH":
+        score += 2
 
-            score += 2
+        reasons.append(
+            "price above EMA20 and EMA50"
+        )
 
-            reasons.append(
-                "Bullish BOS"
-            )
+    elif price < ema20 < ema50:
 
-            break
+        score -= 2
 
-    # --------------------------------------------------------
-    # CHoCH
-    # --------------------------------------------------------
-
-    for event in structure.get(
-        "choch",
-        []
-    )[-5:]:
-
-        if event.get(
-            "direction"
-        ) == "BULLISH":
-
-            score += 2
-
-            reasons.append(
-                "Bullish CHoCH"
-            )
-
-            break
+        reasons.append(
+            "price below EMA20 and EMA50"
+        )
 
     # --------------------------------------------------------
-    # MSB
+    # RSI
     # --------------------------------------------------------
 
-    for event in structure.get(
-        "msb",
-        []
-    )[-5:]:
+    if 50 <= rsi <= 68:
 
-        if event.get(
-            "direction"
-        ) == "BULLISH":
+        score += 1
 
-            score += 3
+        reasons.append(
+            f"RSI healthy ({rsi:.1f})"
+        )
 
-            reasons.append(
-                "Bullish MSB"
-            )
+    elif rsi < 30:
 
-            break
+        # Aşırı satım tek başına alım sinyali değildir.
+        # Sadece olası recovery için küçük katkı.
+        score += 1
 
-    # --------------------------------------------------------
-    # LIQUIDITY SWEEP
-    # --------------------------------------------------------
+        reasons.append(
+            f"RSI oversold ({rsi:.1f})"
+        )
 
-    for event in structure.get(
-        "liquidity_sweeps",
-        []
-    )[-5:]:
+    elif rsi > 75:
 
-        if event.get(
-            "direction"
-        ) == "BULLISH":
+        score -= 1
 
-            score += 2
-
-            reasons.append(
-                "Sell-side liquidity sweep"
-            )
-
-            break
+        reasons.append(
+            f"RSI overheated ({rsi:.1f})"
+        )
 
     # --------------------------------------------------------
-    # FVG
+    # MACD
     # --------------------------------------------------------
 
-    for event in structure.get(
-        "fvg",
-        []
-    )[-10:]:
+    if macd > 0:
 
-        if event.get(
-            "direction"
-        ) == "BULLISH":
+        score += 1
+
+        reasons.append(
+            "MACD positive"
+        )
+
+    elif macd < 0:
+
+        score -= 1
+
+        reasons.append(
+            "MACD negative"
+        )
+
+    # --------------------------------------------------------
+    # BREAK OF STRUCTURE
+    # --------------------------------------------------------
+
+    if structure.get("bos"):
+
+        if trend in (
+            "UP",
+            "LONG",
+            "BULLISH"
+        ):
 
             score += 1
 
             reasons.append(
-                "Bullish FVG"
+                "bullish BOS"
             )
 
-            break
-
     # --------------------------------------------------------
-    # ORDER BLOCK
+    # BTC REGIME
     # --------------------------------------------------------
 
-    for event in structure.get(
-        "order_blocks",
-        []
-    )[-10:]:
+    regime = str(
+        btc_regime or "UNKNOWN"
+    ).upper()
 
-        if event.get(
-            "direction"
-        ) == "BULLISH":
+    if regime == "LONG":
 
-            score += 1
-
-            reasons.append(
-                "Bullish Order Block"
-            )
-
-            break
-
-    # --------------------------------------------------------
-    # DISPLACEMENT
-    # --------------------------------------------------------
-
-    for event in structure.get(
-        "displacement",
-        []
-    )[-5:]:
-
-        if event.get(
-            "direction"
-        ) == "BULLISH":
-
-            score += 2
-
-            reasons.append(
-                "Bullish displacement"
-            )
-
-            break
-
-    return score, reasons
-
-
-# ============================================================
-# TRADE PARAMETERS
-# ============================================================
-
-def _calculate_trade(
-    symbol,
-    candles,
-    indicators,
-    structure,
-):
-
-    if candles is None or candles.empty:
-        return None
-
-    price = float(
-        candles.iloc[-1]["close"]
-    )
-
-    atr = indicators.get(
-        "atr"
-    )
-
-    if atr is None or atr <= 0:
-        return None
-
-    # --------------------------------------------------------
-    # LAST SWING LOW
-    # --------------------------------------------------------
-
-    last_swings = structure.get(
-        "last_swings",
-        {}
-    )
-
-    swing_low = last_swings.get(
-        "last_low"
-    )
-
-    swing_price = None
-
-    if swing_low:
-
-        swing_price = swing_low.get(
-            "price"
-        )
-
-    # --------------------------------------------------------
-    # STOP
-    # --------------------------------------------------------
-
-    atr_stop = (
-        price -
-        atr * ATR_STOP_MULTIPLIER
-    )
-
-    if swing_price is not None:
-
-        stop = min(
-            float(swing_price),
-            atr_stop
-        )
-
-    else:
-
-        stop = atr_stop
-
-    risk = price - stop
-
-    if risk <= 0:
-        return None
-
-    # --------------------------------------------------------
-    # TARGETS
-    # --------------------------------------------------------
-
-    tp1 = price + risk * 2
-
-    tp2 = price + risk * 3
-
-    rr = (
-        abs(tp2 - price)
-        / risk
-    )
-
-    if rr < MIN_RR:
-        return None
-
-    return {
-        "symbol": symbol,
-        "market": "SPOT",
-        "side": "BUY",
-        "entry": price,
-        "stop": stop,
-        "tp1": tp1,
-        "tp2": tp2,
-        "rr": rr,
-    }
-
-
-# ============================================================
-# PUBLIC FUNCTION
-# ============================================================
-
-def analyze_spot(
-    symbol,
-    data,
-):
-
-    """
-    data:
-
-    {
-        "4h": DataFrame,
-        "1h": DataFrame,
-        "15m": DataFrame,
-    }
-
-    Spot tarafında yalnızca BUY üretilir.
-    """
-
-    if not data:
-        return _wait(symbol)
-
-    # ========================================================
-    # DATA
-    # ========================================================
-
-    df4 = data.get("4h")
-    df1 = data.get("1h")
-    df15 = data.get("15m")
-
-    if (
-        df4 is None
-        or df1 is None
-        or df15 is None
-    ):
-        return _wait(
-            symbol,
-            reasons=[
-                "Eksik timeframe verisi"
-            ]
-        )
-
-    if (
-        df4.empty
-        or df1.empty
-        or df15.empty
-    ):
-        return _wait(
-            symbol,
-            reasons=[
-                "Boş timeframe verisi"
-            ]
-        )
-
-    # ========================================================
-    # INDICATORS
-    # ========================================================
-
-    ind4 = latest_indicators(
-        df4
-    )
-
-    ind1 = latest_indicators(
-        df1
-    )
-
-    ind15 = latest_indicators(
-        df15
-    )
-
-    # ========================================================
-    # STRUCTURE
-    # ========================================================
-
-    struct4 = analyze_structure(
-        calculate_indicators(
-            df4
-        )
-    )
-
-    struct1 = analyze_structure(
-        calculate_indicators(
-            df1
-        )
-    )
-
-    struct15 = analyze_structure(
-        calculate_indicators(
-            df15
-        )
-    )
-
-    # ========================================================
-    # SCORE
-    # ========================================================
-
-    score = 0
-    reasons = []
-
-    # --------------------------------------------------------
-    # 4H TREND
-    # --------------------------------------------------------
-
-    trend4 = _trend_score(
-        ind4
-    )
-
-    score += trend4
-
-    if trend4 >= 3:
+        score += 1
 
         reasons.append(
-            "4H bullish trend"
+            "BTC regime supportive"
         )
 
-    elif trend4 == 1:
+    elif regime == "SHORT":
+
+        score -= 2
 
         reasons.append(
-            "4H price above EMA20"
+            "BTC regime bearish"
         )
 
     # --------------------------------------------------------
-    # 4H STRUCTURE
+    # SPOT SAFETY FILTER
     # --------------------------------------------------------
 
-    struct_score4, struct_reasons4 = (
-        _structure_score(
-            struct4
-        )
-    )
-
-    score += struct_score4
-
-    reasons.extend(
-        [
-            f"4H {reason}"
-            for reason in struct_reasons4
-        ]
-    )
-
-    # --------------------------------------------------------
-    # 1H TREND
-    # --------------------------------------------------------
-
-    trend1 = _trend_score(
-        ind1
-    )
-
-    score += trend1
-
-    if trend1 >= 3:
-
-        reasons.append(
-            "1H bullish trend"
-        )
-
-    elif trend1 == 1:
-
-        reasons.append(
-            "1H price above EMA20"
-        )
-
-    # --------------------------------------------------------
-    # 1H STRUCTURE
-    # --------------------------------------------------------
-
-    struct_score1, struct_reasons1 = (
-        _structure_score(
-            struct1
-        )
-    )
-
-    score += struct_score1
-
-    reasons.extend(
-        [
-            f"1H {reason}"
-            for reason in struct_reasons1
-        ]
-    )
-
-    # --------------------------------------------------------
-    # 15M SETUP
-    # --------------------------------------------------------
-
-    struct_score15, struct_reasons15 = (
-        _structure_score(
-            struct15
-        )
-    )
-
-    score += struct_score15
-
-    reasons.extend(
-        [
-            f"15M {reason}"
-            for reason in struct_reasons15
-        ]
-    )
-
-    # --------------------------------------------------------
-    # INDICATORS
-    # --------------------------------------------------------
-
-    rsi_score = _rsi_score(
-        ind15
-    )
-
-    score += rsi_score
-
-    if rsi_score:
-        reasons.append(
-            "15M RSI confirmation"
-        )
-
-    macd_score = _macd_score(
-        ind15
-    )
-
-    score += macd_score
-
-    if macd_score:
-        reasons.append(
-            "15M MACD confirmation"
-        )
-
-    volume_score = _volume_score(
-        ind15
-    )
-
-    score += volume_score
-
-    if volume_score:
-        reasons.append(
-            "15M volume confirmation"
-        )
-
-    # ========================================================
-    # BEARISH FILTER
-    # ========================================================
-
-    if (
-        struct4.get("bias")
-        == "BEARISH"
+    # Spot için düşen bıçağı doğrudan satın alma.
+    if trend in (
+        "DOWN",
+        "SHORT",
+        "BEARISH"
     ):
 
-        return _wait(
-            symbol,
-            score,
-            reasons + [
-                "4H bearish: spot BUY engellendi"
-            ]
-        )
+        if score < 4:
 
-    # ========================================================
+            return {
+                "symbol": symbol,
+                "direction": "WAIT",
+                "action": "NO_TRADE",
+                "strategy": "SPOT",
+                "score": score,
+                "confidence": 0,
+                "reason":
+                    "DOWNTREND_NO_SPOT_ENTRY",
+                "details": reasons,
+            }
+
+    # BTC güçlü bearish ise spot alım için
+    # daha yüksek teyit gerekir.
+    if regime == "SHORT" and score < 6:
+
+        return {
+            "symbol": symbol,
+            "direction": "WAIT",
+            "action": "NO_TRADE",
+            "strategy": "SPOT",
+            "score": score,
+            "confidence": 0,
+            "reason":
+                "BTC_REGIME_NOT_SUPPORTIVE",
+            "details": reasons,
+        }
+
+    # --------------------------------------------------------
     # MINIMUM SCORE
-    # ========================================================
+    # --------------------------------------------------------
 
-    if score < MIN_SCORE:
+    if score < 4:
 
-        return _wait(
-            symbol,
-            score,
-            reasons
-        )
+        return {
+            "symbol": symbol,
+            "direction": "WAIT",
+            "action": "NO_TRADE",
+            "strategy": "SPOT",
+            "score": score,
+            "confidence": 0,
+            "reason":
+                "INSUFFICIENT_CONFIRMATION",
+            "details": reasons,
+        }
 
-    # ========================================================
-    # TRADE
-    # ========================================================
-
-    trade = _calculate_trade(
-
-        symbol,
-
-        df15,
-
-        ind15,
-
-        struct15,
-
-    )
-
-    if trade is None:
-
-        return _wait(
-            symbol,
-            score,
-            reasons + [
-                "Uygun R/R veya SL bulunamadı"
-            ]
-        )
-
-    # ========================================================
+    # --------------------------------------------------------
     # CONFIDENCE
-    # ========================================================
+    # --------------------------------------------------------
 
     confidence = min(
         95,
-        45 + score * 4
+        50 + (score * 7)
     )
 
-    if (
-        struct4.get("bias")
-        == "BULLISH"
-        and struct1.get("bias")
-        == "BULLISH"
-    ):
+    if regime == "SHORT":
+        confidence -= 10
 
-        confidence += 5
-
-    confidence = min(
-        confidence,
-        99
+    confidence = max(
+        0,
+        min(100, confidence)
     )
 
-    # ========================================================
+    # --------------------------------------------------------
+    # LEVELS
+    # --------------------------------------------------------
+
+    stop, tp1, tp2 = _levels(
+        price,
+        atr
+    )
+
+    # --------------------------------------------------------
     # RESULT
-    # ========================================================
+    # --------------------------------------------------------
 
-    trade.update({
+    return {
+        "symbol": symbol,
 
-        "score":
-            score,
+        "direction": "LONG",
+        "action": "BUY",
 
-        "confidence":
+        "strategy": "SPOT",
+
+        "score": score,
+
+        "confidence": round(
             confidence,
+            1
+        ),
 
-        "timeframe":
-            "4H > 1H > 15M",
+        "entry": price,
+        "price": price,
 
-        "status":
-            "PAPER_ONLY",
+        "stop": stop,
+        "tp1": tp1,
+        "tp2": tp2,
 
-        "reasons":
-            reasons,
+        "btc_regime": regime,
 
-    })
+        "trend": trend,
 
-    return trade
+        "rsi": rsi,
+        "macd": macd,
+        "atr": atr,
+        "volume": volume,
+
+        "bos": bool(
+            structure.get(
+                "bos",
+                False
+            )
+        ),
+
+        "choch": bool(
+            structure.get(
+                "choch",
+                False
+            )
+        ),
+
+        "reason": reasons,
+
+        "execution_mode": "PAPER",
+    }
+
+
+def scan_spot(
+    market_data: Dict[str, Any],
+    btc_regime: Optional[str] = None,
+):
+
+    results = []
+
+    for symbol, df in (
+        market_data or {}
+    ).items():
+
+        try:
+
+            result = analyze_spot(
+                df=df,
+                symbol=symbol,
+                btc_regime=btc_regime,
+            )
+
+            results.append(result)
+
+        except Exception as exc:
+
+            results.append({
+                "symbol": symbol,
+                "direction": "WAIT",
+                "action": "NO_TRADE",
+                "strategy": "SPOT",
+                "score": 0,
+                "confidence": 0,
+                "reason":
+                    f"ANALYSIS_ERROR: {exc}",
+            })
+
+    return results
