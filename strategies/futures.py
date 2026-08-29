@@ -15,39 +15,40 @@ def _float(value, default=0.0):
         return default
 
 
-def _get(df, name, default=0.0):
+def _last(df, column, default=0.0):
+
     if df is None or len(df) == 0:
         return default
 
-    if name not in df.columns:
+    if column not in df.columns:
         return default
 
-    return _float(df[name].iloc[-1], default)
+    return _float(
+        df[column].iloc[-1],
+        default
+    )
 
 
-def _build_levels(
-    price: float,
-    atr: float,
-    direction: str,
+def _levels(
+    price,
+    atr,
+    direction,
 ):
-    """
-    ATR tabanlı başlangıç stop/TP seviyeleri.
-    """
 
     if atr <= 0:
         atr = price * 0.01
 
     if direction == "LONG":
 
-        stop = price - (atr * 1.5)
-        tp1 = price + (atr * 2.0)
-        tp2 = price + (atr * 3.0)
+        stop = price - atr * 1.5
+        tp1 = price + atr * 2.0
+        tp2 = price + atr * 3.0
 
     else:
 
-        stop = price + (atr * 1.5)
-        tp1 = price - (atr * 2.0)
-        tp2 = price - (atr * 3.0)
+        stop = price + atr * 1.5
+        tp1 = price - atr * 2.0
+        tp2 = price - atr * 3.0
 
     return stop, tp1, tp2
 
@@ -56,7 +57,7 @@ def analyze_futures(
     df,
     symbol: str,
     btc_regime: Optional[str] = None,
-) -> Dict[str, Any]:
+):
 
     symbol = symbol.upper()
 
@@ -65,15 +66,16 @@ def analyze_futures(
         return {
             "symbol": symbol,
             "direction": "WAIT",
+            "action": "NO_TRADE",
             "strategy": "FUTURES",
             "score": 0,
             "confidence": 0,
             "reason": "INSUFFICIENT_DATA",
         }
 
-    # --------------------------------------------------------
+    # ========================================================
     # INDICATORS
-    # --------------------------------------------------------
+    # ========================================================
 
     try:
         data = calculate_indicators(df)
@@ -81,68 +83,55 @@ def analyze_futures(
 
         data = df.copy()
 
-    # --------------------------------------------------------
+    # ========================================================
     # STRUCTURE
-    # --------------------------------------------------------
+    # ========================================================
 
     try:
         structure = analyze_structure(data)
     except Exception:
 
-        structure = {
-            "trend": "UNKNOWN",
-            "structure": "UNKNOWN",
-            "bos": False,
-            "choch": False,
-        }
+        structure = {}
 
-    price = _get(data, "close")
-
-    ema20 = _get(
+    price = _last(
         data,
-        "ema20",
-        _get(data, "EMA20")
+        "close"
     )
 
-    ema50 = _get(
+    ema20 = _last(
         data,
-        "ema50",
-        _get(data, "EMA50")
+        "ema20"
     )
 
-    rsi = _get(
+    ema50 = _last(
         data,
-        "rsi",
-        _get(data, "RSI")
+        "ema50"
     )
 
-    macd = _get(
+    rsi = _last(
         data,
-        "macd",
-        _get(data, "MACD")
+        "rsi"
     )
 
-    atr = _get(
+    macd_hist = _last(
         data,
-        "atr",
-        _get(data, "ATR")
+        "macd_hist"
     )
 
-    volume = _get(data, "volume")
+    atr = _last(
+        data,
+        "atr"
+    )
 
-    # --------------------------------------------------------
-    # SCORE
-    # --------------------------------------------------------
+    volume_ratio = _last(
+        data,
+        "volume_ratio",
+        1.0
+    )
 
-    long_score = 0
-    short_score = 0
-
-    reasons_long = []
-    reasons_short = []
-
-    # --------------------------------------------------------
-    # TREND
-    # --------------------------------------------------------
+    # ========================================================
+    # STRUCTURE FLAGS
+    # ========================================================
 
     trend = str(
         structure.get(
@@ -151,111 +140,296 @@ def analyze_futures(
         )
     ).upper()
 
-    if trend in ("UP", "LONG", "BULLISH"):
+    bullish_bos = bool(
+        structure.get(
+            "bullish_bos",
+            False
+        )
+    )
+
+    bearish_bos = bool(
+        structure.get(
+            "bearish_bos",
+            False
+        )
+    )
+
+    bullish_msb = bool(
+        structure.get(
+            "bullish_msb",
+            False
+        )
+    )
+
+    bearish_msb = bool(
+        structure.get(
+            "bearish_msb",
+            False
+        )
+    )
+
+    bullish_choch = bool(
+        structure.get(
+            "bullish_choch",
+            False
+        )
+    )
+
+    bearish_choch = bool(
+        structure.get(
+            "bearish_choch",
+            False
+        )
+    )
+
+    bullish_sweep = bool(
+        structure.get(
+            "bullish_sweep",
+            False
+        )
+    )
+
+    bearish_sweep = bool(
+        structure.get(
+            "bearish_sweep",
+            False
+        )
+    )
+
+    fvg = structure.get(
+        "fvg"
+    )
+
+    # ========================================================
+    # SCORES
+    # ========================================================
+
+    long_score = 0
+    short_score = 0
+
+    long_reasons = []
+    short_reasons = []
+
+    # ========================================================
+    # TREND
+    # ========================================================
+
+    if trend == "BULLISH":
 
         long_score += 2
 
-        reasons_long.append(
-            "market structure bullish"
+        long_reasons.append(
+            "bullish market structure"
         )
 
-    elif trend in ("DOWN", "SHORT", "BEARISH"):
+    elif trend == "BEARISH":
 
         short_score += 2
 
-        reasons_short.append(
-            "market structure bearish"
+        short_reasons.append(
+            "bearish market structure"
         )
 
-    # --------------------------------------------------------
+    # ========================================================
     # EMA
-    # --------------------------------------------------------
+    # ========================================================
 
-    if price > ema20 > ema50:
+    if (
+        price > ema20
+        and ema20 > ema50
+    ):
 
         long_score += 2
 
-        reasons_long.append(
-            "price above EMA20/EMA50"
+        long_reasons.append(
+            "EMA trend bullish"
         )
 
-    elif price < ema20 < ema50:
+    elif (
+        price < ema20
+        and ema20 < ema50
+    ):
 
         short_score += 2
 
-        reasons_short.append(
-            "price below EMA20/EMA50"
+        short_reasons.append(
+            "EMA trend bearish"
         )
 
-    # --------------------------------------------------------
+    # ========================================================
     # RSI
-    # --------------------------------------------------------
+    # ========================================================
 
     if 50 <= rsi <= 68:
 
         long_score += 1
 
-        reasons_long.append(
-            f"RSI bullish zone ({rsi:.1f})"
+        long_reasons.append(
+            f"RSI bullish ({rsi:.1f})"
         )
 
     elif 32 <= rsi <= 50:
 
         short_score += 1
 
-        reasons_short.append(
-            f"RSI bearish zone ({rsi:.1f})"
+        short_reasons.append(
+            f"RSI bearish ({rsi:.1f})"
         )
 
-    # --------------------------------------------------------
+    # ========================================================
     # MACD
-    # --------------------------------------------------------
+    # ========================================================
 
-    if macd > 0:
+    if macd_hist > 0:
 
         long_score += 1
 
-        reasons_long.append(
-            "MACD positive"
+        long_reasons.append(
+            "MACD momentum bullish"
         )
 
-    elif macd < 0:
+    elif macd_hist < 0:
 
         short_score += 1
 
-        reasons_short.append(
-            "MACD negative"
+        short_reasons.append(
+            "MACD momentum bearish"
         )
 
-    # --------------------------------------------------------
-    # BREAK OF STRUCTURE
-    # --------------------------------------------------------
+    # ========================================================
+    # VOLUME
+    # ========================================================
 
-    if structure.get("bos"):
+    if volume_ratio >= 1.5:
 
-        if trend in ("UP", "LONG", "BULLISH"):
+        if long_score >= short_score:
 
             long_score += 1
 
-            reasons_long.append(
-                "bullish BOS"
+            long_reasons.append(
+                "volume expansion"
             )
 
-        elif trend in (
-            "DOWN",
-            "SHORT",
-            "BEARISH"
-        ):
+        else:
 
             short_score += 1
 
-            reasons_short.append(
-                "bearish BOS"
+            short_reasons.append(
+                "volume expansion"
             )
 
-    # --------------------------------------------------------
+    # ========================================================
+    # BOS
+    # ========================================================
+
+    if bullish_bos:
+
+        long_score += 2
+
+        long_reasons.append(
+            "bullish BOS"
+        )
+
+    if bearish_bos:
+
+        short_score += 2
+
+        short_reasons.append(
+            "bearish BOS"
+        )
+
+    # ========================================================
+    # MSB
+    # ========================================================
+
+    if bullish_msb:
+
+        long_score += 3
+
+        long_reasons.append(
+            "bullish MSB"
+        )
+
+    if bearish_msb:
+
+        short_score += 3
+
+        short_reasons.append(
+            "bearish MSB"
+        )
+
+    # ========================================================
+    # CHoCH
+    # ========================================================
+
+    if bullish_choch:
+
+        long_score += 3
+
+        long_reasons.append(
+            "bullish CHoCH"
+        )
+
+    if bearish_choch:
+
+        short_score += 3
+
+        short_reasons.append(
+            "bearish CHoCH"
+        )
+
+    # ========================================================
+    # LIQUIDITY SWEEP
+    # ========================================================
+
+    if bullish_sweep:
+
+        long_score += 3
+
+        long_reasons.append(
+            "sell-side liquidity sweep"
+        )
+
+    if bearish_sweep:
+
+        short_score += 3
+
+        short_reasons.append(
+            "buy-side liquidity sweep"
+        )
+
+    # ========================================================
+    # FVG
+    # ========================================================
+
+    if isinstance(fvg, dict):
+
+        fvg_type = str(
+            fvg.get(
+                "type",
+                ""
+            )
+        ).upper()
+
+        if fvg_type == "BULLISH":
+
+            long_score += 2
+
+            long_reasons.append(
+                "bullish FVG"
+            )
+
+        elif fvg_type == "BEARISH":
+
+            short_score += 2
+
+            short_reasons.append(
+                "bearish FVG"
+            )
+
+    # ========================================================
     # BTC REGIME
-    # --------------------------------------------------------
+    # ========================================================
 
     regime = str(
         btc_regime or "UNKNOWN"
@@ -265,37 +439,36 @@ def analyze_futures(
 
         long_score += 1
 
-        if short_score > 0:
-            short_score -= 1
+        short_score -= 1
 
     elif regime == "SHORT":
 
         short_score += 1
 
-        if long_score > 0:
-            long_score -= 1
+        long_score -= 1
 
-    # --------------------------------------------------------
+    # ========================================================
     # DIRECTION
-    # --------------------------------------------------------
+    # ========================================================
 
     if long_score > short_score:
 
         direction = "LONG"
         score = long_score
-        reasons = reasons_long
+        reasons = long_reasons
 
     elif short_score > long_score:
 
         direction = "SHORT"
         score = short_score
-        reasons = reasons_short
+        reasons = short_reasons
 
     else:
 
         return {
             "symbol": symbol,
             "direction": "WAIT",
+            "action": "NO_TRADE",
             "strategy": "FUTURES",
             "score": 0,
             "confidence": 0,
@@ -303,15 +476,16 @@ def analyze_futures(
                 "LONG_SHORT_CONFLICT",
         }
 
-    # --------------------------------------------------------
+    # ========================================================
     # MINIMUM SCORE
-    # --------------------------------------------------------
+    # ========================================================
 
-    if score < 4:
+    if score < 5:
 
         return {
             "symbol": symbol,
             "direction": "WAIT",
+            "action": "NO_TRADE",
             "strategy": "FUTURES",
             "score": score,
             "confidence": 0,
@@ -320,16 +494,16 @@ def analyze_futures(
             "details": reasons,
         }
 
-    # --------------------------------------------------------
+    # ========================================================
     # CONFIDENCE
-    # --------------------------------------------------------
+    # ========================================================
 
     confidence = min(
-        95,
-        50 + (score * 7)
+        96,
+        45 + score * 6
     )
 
-    # BTC ters yöndeyse confidence azalt
+    # BTC ters yöndeyse güven azalt
     if (
         regime == "LONG"
         and direction == "SHORT"
@@ -349,65 +523,148 @@ def analyze_futures(
         min(100, confidence)
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # LEVELS
-    # --------------------------------------------------------
+    # ========================================================
 
-    stop, tp1, tp2 = _build_levels(
+    stop, tp1, tp2 = _levels(
         price,
         atr,
-        direction,
+        direction
     )
 
-    # --------------------------------------------------------
+    risk = abs(
+        price - stop
+    )
+
+    reward = abs(
+        tp2 - price
+    )
+
+    if risk <= 0:
+
+        return {
+            "symbol": symbol,
+            "direction": "WAIT",
+            "action": "NO_TRADE",
+            "strategy": "FUTURES",
+            "score": score,
+            "confidence": 0,
+            "reason":
+                "INVALID_RISK",
+        }
+
+    rr = reward / risk
+
+    # ========================================================
     # RESULT
-    # --------------------------------------------------------
+    # ========================================================
 
     return {
-        "symbol": symbol,
-        "direction": direction,
-        "action": direction,
-        "strategy": "FUTURES",
 
-        "score": score,
-        "confidence": round(
-            confidence,
-            1
-        ),
+        "symbol":
+            symbol,
 
-        "entry": price,
-        "price": price,
+        "direction":
+            direction,
 
-        "stop": stop,
-        "tp1": tp1,
-        "tp2": tp2,
+        "action":
+            direction,
 
-        "btc_regime": regime,
+        "strategy":
+            "FUTURES",
 
-        "trend": trend,
-        "rsi": rsi,
-        "macd": macd,
-        "atr": atr,
+        "score":
+            score,
 
-        "volume": volume,
+        "confidence":
+            round(
+                confidence,
+                1
+            ),
 
-        "bos": bool(
-            structure.get("bos", False)
-        ),
+        "entry":
+            price,
 
-        "choch": bool(
-            structure.get("choch", False)
-        ),
+        "price":
+            price,
 
-        "reason": reasons,
+        "stop":
+            stop,
 
-        "execution_mode": "PAPER",
+        "tp1":
+            tp1,
+
+        "tp2":
+            tp2,
+
+        "rr":
+            round(
+                rr,
+                2
+            ),
+
+        "btc_regime":
+            regime,
+
+        "trend":
+            trend,
+
+        "rsi":
+            rsi,
+
+        "macd_hist":
+            macd_hist,
+
+        "atr":
+            atr,
+
+        "volume_ratio":
+            volume_ratio,
+
+        "bos":
+            (
+                bullish_bos
+                or
+                bearish_bos
+            ),
+
+        "msb":
+            (
+                bullish_msb
+                or
+                bearish_msb
+            ),
+
+        "choch":
+            (
+                bullish_choch
+                or
+                bearish_choch
+            ),
+
+        "liquidity_sweep":
+            (
+                bullish_sweep
+                or
+                bearish_sweep
+            ),
+
+        "fvg":
+            fvg,
+
+        "reasons":
+            reasons,
+
+        "execution_mode":
+            "PAPER",
+
     }
 
 
 def scan_futures(
-    market_data: Dict[str, Any],
-    btc_regime: Optional[str] = None,
+    market_data,
+    btc_regime=None,
 ):
 
     results = []
@@ -418,24 +675,39 @@ def scan_futures(
 
         try:
 
-            result = analyze_futures(
-                df=df,
-                symbol=symbol,
-                btc_regime=btc_regime,
+            results.append(
+                analyze_futures(
+                    df=df,
+                    symbol=symbol,
+                    btc_regime=btc_regime,
+                )
             )
-
-            results.append(result)
 
         except Exception as exc:
 
             results.append({
-                "symbol": symbol,
-                "direction": "WAIT",
-                "strategy": "FUTURES",
-                "score": 0,
-                "confidence": 0,
+
+                "symbol":
+                    symbol,
+
+                "direction":
+                    "WAIT",
+
+                "action":
+                    "NO_TRADE",
+
+                "strategy":
+                    "FUTURES",
+
+                "score":
+                    0,
+
+                "confidence":
+                    0,
+
                 "reason":
                     f"ANALYSIS_ERROR: {exc}",
+
             })
 
     return results
