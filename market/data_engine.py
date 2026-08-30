@@ -7,29 +7,58 @@ import requests
 import pandas as pd
 
 
-BASE_URL = "https://api.binance.com"
+# ============================================================
+# BINANCE ENDPOINTS
+# ============================================================
 
-KLINE_ENDPOINT = (
-    "/api/v3/klines"
-)
+# Public Spot market data
+SPOT_BASE_URL = "https://data-api.binance.vision"
 
-TICKER_ENDPOINT = (
-    "/api/v3/ticker/24hr"
-)
+# Binance Spot API fallback
+SPOT_FALLBACK_URLS = [
+    "https://api1.binance.com",
+    "https://api2.binance.com",
+    "https://api3.binance.com",
+    "https://api4.binance.com",
+]
+
+# Futures market data
+FUTURES_BASE_URL = "https://fapi.binance.com"
+
+
+KLINE_ENDPOINT = "/api/v3/klines"
+TICKER_ENDPOINT = "/api/v3/ticker/24hr"
+
+FUTURES_KLINE_ENDPOINT = "/fapi/v1/klines"
+
+
+# ============================================================
+# SESSION
+# ============================================================
+
+SESSION = requests.Session()
+
+SESSION.headers.update({
+    "User-Agent": (
+        "Mozilla/5.0 "
+        "(Crypto Research Agent)"
+    ),
+    "Accept": "application/json",
+})
 
 
 # ============================================================
 # HTTP
 # ============================================================
 
-def _get(
+def _get_url(
+    base_url,
     endpoint,
     params=None,
     timeout=15,
 ):
-
-    response = requests.get(
-        BASE_URL + endpoint,
+    response = SESSION.get(
+        base_url + endpoint,
         params=params,
         timeout=timeout,
     )
@@ -39,27 +68,68 @@ def _get(
     return response.json()
 
 
-# ============================================================
-# KLINES
-# ============================================================
-
-def get_klines(
-    symbol,
-    interval,
-    limit=200,
+def _get_spot(
+    endpoint,
+    params=None,
+    timeout=15,
 ):
+    """
+    Public Spot market data.
 
-    symbol = symbol.upper()
+    Önce data-api.binance.vision kullanılır.
+    451 / bağlantı problemi halinde Binance
+    alternatif API endpointleri denenir.
+    """
 
-    raw = _get(
-        KLINE_ENDPOINT,
-        {
-            "symbol": symbol,
-            "interval": interval,
-            "limit": limit,
-        },
+    urls = [
+        SPOT_BASE_URL,
+        *SPOT_FALLBACK_URLS,
+    ]
+
+    last_error = None
+
+    for base_url in urls:
+
+        try:
+
+            return _get_url(
+                base_url,
+                endpoint,
+                params=params,
+                timeout=timeout,
+            )
+
+        except Exception as exc:
+
+            last_error = exc
+
+    raise last_error
+
+
+def _get_futures(
+    endpoint,
+    params=None,
+    timeout=15,
+):
+    """
+    Binance Futures public market data.
+    """
+
+    return _get_url(
+        FUTURES_BASE_URL,
+        endpoint,
+        params=params,
+        timeout=timeout,
     )
 
+
+# ============================================================
+# KLINE PARSER
+# ============================================================
+
+def _parse_klines(
+    raw,
+):
     if not raw:
         return pd.DataFrame()
 
@@ -123,6 +193,20 @@ def get_klines(
     )
 
     # --------------------------------------------------------
+    # REMOVE INVALID ROWS
+    # --------------------------------------------------------
+
+    df = df.dropna(
+        subset=[
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+        ]
+    )
+
+    # --------------------------------------------------------
     # INDEX
     # --------------------------------------------------------
 
@@ -134,7 +218,69 @@ def get_klines(
 
 
 # ============================================================
-# MULTI TIMEFRAME
+# SPOT KLINES
+# ============================================================
+
+def get_klines(
+    symbol,
+    interval,
+    limit=200,
+):
+    """
+    Binance Spot OHLCV verisi.
+    """
+
+    symbol = str(
+        symbol
+    ).upper()
+
+    raw = _get_spot(
+        KLINE_ENDPOINT,
+        {
+            "symbol": symbol,
+            "interval": interval,
+            "limit": int(limit),
+        },
+    )
+
+    return _parse_klines(
+        raw
+    )
+
+
+# ============================================================
+# FUTURES KLINES
+# ============================================================
+
+def get_futures_klines(
+    symbol,
+    interval,
+    limit=200,
+):
+    """
+    Binance USDT-M Futures OHLCV verisi.
+    """
+
+    symbol = str(
+        symbol
+    ).upper()
+
+    raw = _get_futures(
+        FUTURES_KLINE_ENDPOINT,
+        {
+            "symbol": symbol,
+            "interval": interval,
+            "limit": int(limit),
+        },
+    )
+
+    return _parse_klines(
+        raw
+    )
+
+
+# ============================================================
+# MULTI TIMEFRAME SPOT DATA
 # ============================================================
 
 def get_multi_timeframe_data(
@@ -142,6 +288,19 @@ def get_multi_timeframe_data(
     timeframes=None,
     limit=200,
 ):
+    """
+    Spot market için çoklu zaman dilimi.
+
+    Dönen yapı:
+
+        {
+            "4h": DataFrame,
+            "1h": DataFrame,
+            "15m": DataFrame,
+            "5m": DataFrame,
+            "1m": DataFrame
+        }
+    """
 
     if timeframes is None:
 
@@ -159,11 +318,22 @@ def get_multi_timeframe_data(
 
         try:
 
-            data[timeframe] = get_klines(
+            df = get_klines(
                 symbol,
                 timeframe,
                 limit,
             )
+
+            data[timeframe] = df
+
+            if df.empty:
+
+                print(
+                    f"DATA WARNING "
+                    f"{symbol} "
+                    f"{timeframe}: "
+                    f"empty dataframe"
+                )
 
         except Exception as exc:
 
@@ -174,10 +344,75 @@ def get_multi_timeframe_data(
                 f"{exc}"
             )
 
-            data[timeframe] = pd.DataFrame()
+            data[timeframe] = (
+                pd.DataFrame()
+            )
 
-        # Binance API'yi gereksiz zorlamamak için
-        # küçük bekleme.
+        # API rate limit için küçük bekleme
+        time.sleep(0.10)
+
+    return data
+
+
+# ============================================================
+# MULTI TIMEFRAME FUTURES DATA
+# ============================================================
+
+def get_multi_timeframe_futures_data(
+    symbol,
+    timeframes=None,
+    limit=200,
+):
+    """
+    Futures için çoklu zaman dilimi.
+    """
+
+    if timeframes is None:
+
+        timeframes = [
+            "4h",
+            "1h",
+            "15m",
+            "5m",
+            "1m",
+        ]
+
+    data = {}
+
+    for timeframe in timeframes:
+
+        try:
+
+            df = get_futures_klines(
+                symbol,
+                timeframe,
+                limit,
+            )
+
+            data[timeframe] = df
+
+            if df.empty:
+
+                print(
+                    f"FUTURES DATA WARNING "
+                    f"{symbol} "
+                    f"{timeframe}: "
+                    f"empty dataframe"
+                )
+
+        except Exception as exc:
+
+            print(
+                f"FUTURES DATA ERROR "
+                f"{symbol} "
+                f"{timeframe}: "
+                f"{exc}"
+            )
+
+            data[timeframe] = (
+                pd.DataFrame()
+            )
+
         time.sleep(0.10)
 
     return data
@@ -190,10 +425,15 @@ def get_multi_timeframe_data(
 def get_price(
     symbol,
 ):
+    """
+    Spot son fiyat.
+    """
 
-    symbol = symbol.upper()
+    symbol = str(
+        symbol
+    ).upper()
 
-    data = _get(
+    data = _get_spot(
         TICKER_ENDPOINT,
         {
             "symbol": symbol,
@@ -206,12 +446,42 @@ def get_price(
 
 
 # ============================================================
-# ALL USDT MARKETS
+# FUTURES PRICE
+# ============================================================
+
+def get_futures_price(
+    symbol,
+):
+    """
+    Futures son fiyat.
+    """
+
+    symbol = str(
+        symbol
+    ).upper()
+
+    data = _get_futures(
+        "/fapi/v1/ticker/price",
+        {
+            "symbol": symbol,
+        },
+    )
+
+    return float(
+        data["price"]
+    )
+
+
+# ============================================================
+# ALL USDT SPOT MARKETS
 # ============================================================
 
 def get_usdt_tickers():
+    """
+    Binance Spot üzerindeki USDT marketlerini döndürür.
+    """
 
-    raw = _get(
+    raw = _get_spot(
         TICKER_ENDPOINT
     )
 
@@ -224,7 +494,7 @@ def get_usdt_tickers():
         if str(
             ticker.get(
                 "symbol",
-                ""
+                "",
             )
         ).upper().endswith(
             "USDT"
@@ -240,6 +510,11 @@ def discover_usdt_markets(
     min_volume_usdt=10_000_000,
     limit=50,
 ):
+    """
+    Yüksek hacimli USDT marketlerini keşfeder.
+
+    Bu fonksiyon işlem sinyali üretmez.
+    """
 
     tickers = get_usdt_tickers()
 
@@ -250,7 +525,7 @@ def discover_usdt_markets(
         symbol = str(
             ticker.get(
                 "symbol",
-                ""
+                "",
             )
         ).upper()
 
@@ -264,7 +539,7 @@ def discover_usdt_markets(
             volume = float(
                 ticker.get(
                     "quoteVolume",
-                    0
+                    0,
                 )
             )
 
@@ -283,7 +558,7 @@ def discover_usdt_markets(
             price = float(
                 ticker.get(
                     "lastPrice",
-                    0
+                    0,
                 )
             )
 
@@ -299,7 +574,7 @@ def discover_usdt_markets(
             change = float(
                 ticker.get(
                     "priceChangePercent",
-                    0
+                    0,
                 )
             )
 
@@ -327,19 +602,18 @@ def discover_usdt_markets(
         })
 
     # --------------------------------------------------------
-    # RANK BY VOLUME
+    # RANK
     # --------------------------------------------------------
 
     candidates.sort(
-
         key=lambda x:
             x["quote_volume"],
-
         reverse=True,
-
     )
 
-    return candidates[:limit]
+    return candidates[
+        :int(limit)
+    ]
 
 
 # ============================================================
@@ -351,6 +625,9 @@ def get_market_data(
     timeframe="15m",
     limit=200,
 ):
+    """
+    Eski modüllerle uyumluluk.
+    """
 
     return get_klines(
         symbol,
@@ -364,9 +641,41 @@ def fetch_ohlcv(
     timeframe="15m",
     limit=200,
 ):
+    """
+    Eski modüllerle uyumluluk.
+    """
 
     return get_klines(
         symbol,
         timeframe,
         limit,
     )
+
+
+# ============================================================
+# GENERIC DATA LOADER
+# ============================================================
+
+def load_market_data(
+    symbol,
+    limit=200,
+):
+    """
+    Hem Spot hem Futures verisini tek
+    yapı altında hazırlar.
+
+    Stratejiler gerektiğinde ilgili
+    piyasayı seçebilir.
+    """
+
+    return {
+        "spot": get_multi_timeframe_data(
+            symbol,
+            limit=limit,
+        ),
+
+        "futures": get_multi_timeframe_futures_data(
+            symbol,
+            limit=limit,
+        ),
+    }
