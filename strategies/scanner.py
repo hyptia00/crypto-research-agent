@@ -5,29 +5,47 @@
 from typing import Any, Dict, List, Optional
 
 
+# ============================================================
+# DEFAULT SETTINGS
+# ============================================================
+
 DEFAULT_MIN_VOLUME = 10_000_000
 DEFAULT_MAX_RESULTS = 15
 
 
-def _float(value, default=0.0):
+# ============================================================
+# HELPERS
+# ============================================================
 
+def _float(
+    value,
+    default=0.0,
+):
     try:
         return float(value)
     except (TypeError, ValueError):
         return default
 
 
-def _symbol(ticker):
+def _symbol(
+    ticker,
+):
+    if not isinstance(ticker, dict):
+        return ""
 
     return str(
         ticker.get(
             "symbol",
-            ""
+            "",
         )
     ).upper()
 
 
-def _volume(ticker):
+def _volume(
+    ticker,
+):
+    if not isinstance(ticker, dict):
+        return 0.0
 
     return _float(
         ticker.get(
@@ -36,43 +54,57 @@ def _volume(ticker):
                 "quote_volume",
                 ticker.get(
                     "volume",
-                    0
-                )
-            )
-        )
+                    0,
+                ),
+            ),
+        ),
     )
 
 
-def _change(ticker):
+def _change(
+    ticker,
+):
+    if not isinstance(ticker, dict):
+        return 0.0
 
     return _float(
         ticker.get(
             "priceChangePercent",
             ticker.get(
                 "price_change_percent",
-                0
-            )
-        )
+                0,
+            ),
+        ),
     )
 
 
-def _price(ticker):
+def _price(
+    ticker,
+):
+    if not isinstance(ticker, dict):
+        return 0.0
 
     return _float(
         ticker.get(
             "lastPrice",
             ticker.get(
-                "price",
-                0
-            )
-        )
+                "last_price",
+                ticker.get(
+                    "price",
+                    0,
+                ),
+            ),
+        ),
     )
 
 
-def _momentum_score(
-    change
-):
+# ============================================================
+# MOMENTUM SCORE
+# ============================================================
 
+def _momentum_score(
+    change,
+):
     change = abs(
         _float(change)
     )
@@ -92,9 +124,16 @@ def _momentum_score(
     return 0
 
 
+# ============================================================
+# VOLUME SCORE
+# ============================================================
+
 def _volume_score(
-    volume
+    volume,
 ):
+    volume = _float(
+        volume
+    )
 
     if volume >= 100_000_000:
         return 4
@@ -111,13 +150,18 @@ def _volume_score(
     return 0
 
 
+# ============================================================
+# BUILD CANDIDATE
+# ============================================================
+
 def _build_candidate(
     ticker,
     core_coins,
-    min_volume
+    min_volume,
 ):
-
-    symbol = _symbol(ticker)
+    symbol = _symbol(
+        ticker
+    )
 
     if not symbol:
         return None
@@ -138,6 +182,10 @@ def _build_candidate(
     if symbol in core_coins:
         return None
 
+    # --------------------------------------------------------
+    # MARKET DATA
+    # --------------------------------------------------------
+
     volume = _volume(
         ticker
     )
@@ -156,9 +204,16 @@ def _build_candidate(
     if price <= 0:
         return None
 
-    # Çok düşük hareket = ilgi yok
+    # --------------------------------------------------------
+    # LOW ACTIVITY FILTER
+    # --------------------------------------------------------
+
     if abs(change) < 1.5:
         return None
+
+    # --------------------------------------------------------
+    # SCORES
+    # --------------------------------------------------------
 
     momentum = _momentum_score(
         change
@@ -168,73 +223,101 @@ def _build_candidate(
         volume
     )
 
-    score = (
+    discovery_score = (
         momentum
         +
         volume_score
     )
 
-    if score < 2:
+    if discovery_score < 2:
         return None
 
     # --------------------------------------------------------
-    # EXTREME MOVE FLAG
+    # EXTREME MOVE
     # --------------------------------------------------------
 
     extreme = (
         abs(change) >= 15
     )
 
+    # --------------------------------------------------------
+    # DIRECTION BIAS
+    # --------------------------------------------------------
+
+    if change > 0:
+        bias = "LONG_BIAS"
+
+    elif change < 0:
+        bias = "SHORT_BIAS"
+
+    else:
+        bias = "NEUTRAL"
+
+    # --------------------------------------------------------
+    # RESULT
+    # --------------------------------------------------------
+
     return {
+        "symbol": symbol,
 
-        "symbol":
-            symbol,
+        "price": price,
 
-        "price":
-            price,
+        "change_24h": change,
 
-        "change_24h":
-            change,
+        "volume_24h": volume,
 
-        "volume_24h":
-            volume,
+        "momentum_score": momentum,
 
-        "momentum_score":
-            momentum,
+        "volume_score": volume_score,
 
-        "volume_score":
-            volume_score,
+        "discovery_score": discovery_score,
 
-        "discovery_score":
-            score,
+        "extreme_move": extreme,
 
-        "extreme_move":
-            extreme,
+        "bias": bias,
 
-        "source":
-            "MARKET_SCANNER",
-
+        "source": "MARKET_SCANNER",
     }
 
 
+# ============================================================
+# MARKET SCANNER
+# ============================================================
+
 def scan_market(
-    tickers: Optional[List[Dict[str, Any]]] = None,
-    core_coins: Optional[List[str]] = None,
+    tickers: Optional[
+        List[Dict[str, Any]]
+    ] = None,
+
+    core_coins: Optional[
+        List[str]
+    ] = None,
+
     min_volume: float = DEFAULT_MIN_VOLUME,
+
     limit: int = DEFAULT_MAX_RESULTS,
 ):
-
     """
-    Piyasadaki yeni fırsatları bulur.
+    Piyasadaki yeni fırsat adaylarını bulur.
 
     Bu fonksiyon:
+
         - işlem açmaz
-        - BUY/SELL üretmez
-        - sadece aday bulur
+        - BUY/SELL emri üretmez
+        - pozisyon açmaz
+        - sadece aday coinleri bulur
+
+    Nihai işlem kararı:
+        Futures / Spot / Scalping
+        stratejilerine bırakılır.
     """
 
     if not tickers:
         return []
+
+    # --------------------------------------------------------
+    # NORMALIZE CORE COINS
+    # --------------------------------------------------------
 
     core = {
         str(x).upper()
@@ -243,14 +326,47 @@ def scan_market(
         )
     }
 
+    # --------------------------------------------------------
+    # VALIDATE LIMIT
+    # --------------------------------------------------------
+
+    try:
+        limit = int(
+            limit
+        )
+    except (
+        TypeError,
+        ValueError,
+    ):
+        limit = DEFAULT_MAX_RESULTS
+
+    if limit <= 0:
+        return []
+
+    # --------------------------------------------------------
+    # VALIDATE VOLUME
+    # --------------------------------------------------------
+
+    min_volume = _float(
+        min_volume,
+        DEFAULT_MIN_VOLUME,
+    )
+
+    if min_volume < 0:
+        min_volume = 0
+
+    # --------------------------------------------------------
+    # SCAN
+    # --------------------------------------------------------
+
     candidates = []
 
     for ticker in tickers:
 
         candidate = _build_candidate(
-            ticker,
-            core,
-            min_volume,
+            ticker=ticker,
+            core_coins=core,
+            min_volume=min_volume,
         )
 
         if candidate is None:
@@ -265,23 +381,42 @@ def scan_market(
     # --------------------------------------------------------
 
     candidates.sort(
-
         key=lambda x: (
-            x["discovery_score"],
-            x["volume_24h"],
-            abs(x["change_24h"]),
-        ),
+            _float(
+                x.get(
+                    "discovery_score",
+                )
+            ),
 
+            _float(
+                x.get(
+                    "volume_24h",
+                )
+            ),
+
+            abs(
+                _float(
+                    x.get(
+                        "change_24h",
+                    )
+                )
+            ),
+        ),
         reverse=True,
     )
 
-    return candidates[:limit]
+    return candidates[
+        :limit
+    ]
 
+
+# ============================================================
+# RANK CANDIDATES
+# ============================================================
 
 def rank_candidates(
-    candidates
+    candidates,
 ):
-
     """
     Mevcut adayları tekrar sıralar.
     """
@@ -289,40 +424,56 @@ def rank_candidates(
     if not candidates:
         return []
 
+    valid = [
+        candidate
+        for candidate in candidates
+        if isinstance(
+            candidate,
+            dict,
+        )
+    ]
+
     return sorted(
-
-        candidates,
-
+        valid,
         key=lambda x: (
             _float(
                 x.get(
-                    "discovery_score"
+                    "discovery_score",
                 )
             ),
 
             _float(
                 x.get(
-                    "volume_24h"
+                    "volume_24h",
                 )
             ),
 
             abs(
                 _float(
                     x.get(
-                        "change_24h"
+                        "change_24h",
                     )
                 )
             ),
         ),
-
         reverse=True,
     )
 
 
+# ============================================================
+# REMOVE CORE COINS
+# ============================================================
+
 def remove_core_coins(
     candidates,
-    core_coins
+    core_coins,
 ):
+    """
+    Core coinleri aday listesinden çıkarır.
+    """
+
+    if not candidates:
+        return []
 
     core = {
         str(x).upper()
@@ -331,14 +482,139 @@ def remove_core_coins(
         )
     }
 
-    return [
-        candidate
-        for candidate in candidates
-        if str(
+    result = []
+
+    for candidate in candidates:
+
+        if not isinstance(
+            candidate,
+            dict,
+        ):
+            continue
+
+        symbol = str(
             candidate.get(
                 "symbol",
-                ""
+                "",
             )
         ).upper()
-        not in core
-    ]
+
+        if symbol in core:
+            continue
+
+        result.append(
+            candidate
+        )
+
+    return result
+
+
+# ============================================================
+# PRINT SCANNER REPORT
+# ============================================================
+
+def print_scanner_report(
+    candidates,
+):
+    """
+    Scanner sonuçlarını terminale okunabilir
+    şekilde yazdırır.
+
+    Bu fonksiyon sadece raporlama yapar.
+    """
+
+    print()
+    print(
+        "=" * 80
+    )
+
+    print(
+        "MARKET OPPORTUNITY SCANNER"
+    )
+
+    print(
+        "=" * 80
+    )
+
+    if not candidates:
+
+        print(
+            "No new market candidates found."
+        )
+
+        print(
+            "=" * 80
+        )
+
+        return
+
+    print(
+        f"Candidates: {len(candidates)}"
+    )
+
+    print()
+
+    for index, candidate in enumerate(
+        candidates,
+        start=1,
+    ):
+
+        symbol = candidate.get(
+            "symbol",
+            "?",
+        )
+
+        price = _float(
+            candidate.get(
+                "price",
+            )
+        )
+
+        change = _float(
+            candidate.get(
+                "change_24h",
+            )
+        )
+
+        volume = _float(
+            candidate.get(
+                "volume_24h",
+            )
+        )
+
+        score = _float(
+            candidate.get(
+                "discovery_score",
+            )
+        )
+
+        bias = candidate.get(
+            "bias",
+            "NEUTRAL",
+        )
+
+        extreme = candidate.get(
+            "extreme_move",
+            False,
+        )
+
+        print(
+            f"{index:02d}. "
+            f"{symbol:<15} "
+            f"24h: {change:>7.2f}% "
+            f"Vol: ${volume:>12,.0f} "
+            f"Score: {score:>4.1f} "
+            f"{bias}"
+        )
+
+        if extreme:
+
+            print(
+                "    WARNING: EXTREME 24H MOVE"
+            )
+
+    print()
+
+    print(
+        "=" * 80
+    )
