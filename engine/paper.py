@@ -790,4 +790,4 @@ def create_paper_trader(
         max_portfolio_risk=0.03,
 
         max_open_positions=3,
-        )
+            )
