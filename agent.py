@@ -9,28 +9,21 @@ from config import (
     DISCOVERY_LIMIT,
     MIN_DISCOVERY_VOLUME,
     DATA_LIMIT,
+
     FUTURES_ENABLED,
     SPOT_ENABLED,
     SCALPING_ENABLED,
-    FUTURES_MIN_SCORE,
-    FUTURES_MIN_CONFIDENCE,
-    FUTURES_MIN_RR,
-    SPOT_MIN_SCORE,
-    SPOT_MIN_CONFIDENCE,
-    SPOT_MIN_RR,
-    SCALPING_MIN_SCORE,
-    SCALPING_MIN_CONFIDENCE,
-    SCALPING_MIN_RR,
+
     STARTING_BALANCE,
     RISK_PER_TRADE,
     MAX_OPEN_POSITIONS,
+
     MIN_AGGREGATED_SCORE,
     MIN_AGGREGATED_CONFIDENCE,
 )
 
 from market.data_engine import (
     get_multi_timeframe_data,
-    get_price,
     get_usdt_tickers,
 )
 
@@ -68,8 +61,15 @@ from engine.paper import (
 # SETTINGS
 # ============================================================
 
-
 MAX_SIGNALS = 10
+
+TIMEFRAMES = [
+    "4h",
+    "1h",
+    "15m",
+    "5m",
+    "1m",
+]
 
 
 # ============================================================
@@ -84,7 +84,10 @@ def normalize_core_coins():
 
         symbol = str(
             coin
-        ).upper()
+        ).upper().strip()
+
+        if not symbol:
+            continue
 
         if not symbol.endswith("USDT"):
             symbol += "USDT"
@@ -113,11 +116,11 @@ def discover_symbols():
         tickers = get_usdt_tickers()
 
         candidates = scan_market(
-    tickers=tickers,
-    core_coins=core,
-    min_volume=MIN_DISCOVERY_VOLUME,
-    limit=DISCOVERY_LIMIT,
-)
+            tickers=tickers,
+            core_coins=core,
+            min_volume=MIN_DISCOVERY_VOLUME,
+            limit=DISCOVERY_LIMIT,
+        )
 
         print_scanner_report(
             candidates
@@ -125,15 +128,20 @@ def discover_symbols():
 
         for candidate in candidates:
 
-            symbol = candidate.get(
-                "symbol"
-            )
+            symbol = str(
+                candidate.get(
+                    "symbol",
+                    ""
+                )
+            ).upper().strip()
 
-            if (
-                symbol
-                and symbol not in symbols
-            ):
+            if not symbol:
+                continue
 
+            if not symbol.endswith("USDT"):
+                continue
+
+            if symbol not in symbols:
                 symbols.append(symbol)
 
     except Exception as exc:
@@ -151,19 +159,50 @@ def discover_symbols():
 
 def load_data(symbol):
 
+    symbol = str(
+        symbol
+    ).upper().strip()
+
+    if not symbol:
+        return {}
+
     try:
 
-        return get_multi_timeframe_data(
+        data = get_multi_timeframe_data(
             symbol=symbol,
-            timeframes=[
-                "4h",
-                "1h",
-                "15m",
-                "5m",
-                "1m",
-            ],
+            timeframes=TIMEFRAMES,
             limit=DATA_LIMIT,
         )
+
+        if not isinstance(
+            data,
+            dict
+        ):
+            return {}
+
+        valid_data = {}
+
+        for timeframe in TIMEFRAMES:
+
+            df = data.get(
+                timeframe
+            )
+
+            if df is None:
+                continue
+
+            if getattr(
+                df,
+                "empty",
+                True,
+            ):
+                continue
+
+            valid_data[
+                timeframe
+            ] = df
+
+        return valid_data
 
     except Exception as exc:
 
@@ -179,20 +218,37 @@ def load_data(symbol):
 # BTC REGIME
 # ============================================================
 
-def get_btc_regime():
+def calculate_btc_regime(
+    data
+):
+
+    if not isinstance(
+        data,
+        dict
+    ):
+        return "UNKNOWN"
+
+    df = data.get(
+        "1h"
+    )
+
+    if df is None:
+        return "UNKNOWN"
+
+    if getattr(
+        df,
+        "empty",
+        True,
+    ):
+        return "UNKNOWN"
+
+    if "close" not in df.columns:
+        return "UNKNOWN"
+
+    if len(df) < 50:
+        return "UNKNOWN"
 
     try:
-
-        data = load_data(
-            "BTCUSDT"
-        )
-
-        df = data.get(
-            "1h"
-        )
-
-        if df is None or len(df) < 50:
-            return "UNKNOWN"
 
         close = float(
             df["close"].iloc[-1]
@@ -202,7 +258,7 @@ def get_btc_regime():
             df["close"]
             .ewm(
                 span=20,
-                adjust=False
+                adjust=False,
             )
             .mean()
             .iloc[-1]
@@ -212,7 +268,7 @@ def get_btc_regime():
             df["close"]
             .ewm(
                 span=50,
-                adjust=False
+                adjust=False,
             )
             .mean()
             .iloc[-1]
@@ -243,14 +299,28 @@ def get_btc_regime():
 def analyze_symbol(
     symbol,
     btc_regime,
+    data=None,
 ):
 
-    print()
-    print(f"[ANALYZE] {symbol}")
+    symbol = str(
+        symbol
+    ).upper().strip()
 
-    data = load_data(symbol)
+    print()
+    print(
+        f"[ANALYZE] {symbol}"
+    )
+
+    if data is None:
+        data = load_data(
+            symbol
+        )
 
     if not data:
+        print(
+            f"[SKIP] "
+            f"{symbol}: NO DATA"
+        )
         return []
 
     signals = []
@@ -263,9 +333,14 @@ def analyze_symbol(
 
         try:
 
-            df_1h = data.get("1h")
+            df_1h = data.get(
+                "1h"
+            )
 
-            if df_1h is not None:
+            if (
+                df_1h is not None
+                and not df_1h.empty
+            ):
 
                 signal = analyze_futures(
                     df=df_1h,
@@ -273,8 +348,19 @@ def analyze_symbol(
                     btc_regime=btc_regime,
                 )
 
-                if signal:
-                    signals.append(signal)
+                if (
+                    isinstance(
+                        signal,
+                        dict,
+                    )
+                    and signal.get(
+                        "direction"
+                    ) != "WAIT"
+                ):
+
+                    signals.append(
+                        signal
+                    )
 
         except Exception as exc:
 
@@ -291,9 +377,14 @@ def analyze_symbol(
 
         try:
 
-            df_4h = data.get("4h")
+            df_4h = data.get(
+                "4h"
+            )
 
-            if df_4h is not None:
+            if (
+                df_4h is not None
+                and not df_4h.empty
+            ):
 
                 signal = analyze_spot(
                     df=df_4h,
@@ -301,8 +392,19 @@ def analyze_symbol(
                     btc_regime=btc_regime,
                 )
 
-                if signal:
-                    signals.append(signal)
+                if (
+                    isinstance(
+                        signal,
+                        dict,
+                    )
+                    and signal.get(
+                        "direction"
+                    ) != "WAIT"
+                ):
+
+                    signals.append(
+                        signal
+                    )
 
         except Exception as exc:
 
@@ -325,8 +427,19 @@ def analyze_symbol(
                 btc_regime=btc_regime,
             )
 
-            if signal:
-                signals.append(signal)
+            if (
+                isinstance(
+                    signal,
+                    dict,
+                )
+                and signal.get(
+                    "direction"
+                ) != "WAIT"
+            ):
+
+                signals.append(
+                    signal
+                )
 
         except Exception as exc:
 
@@ -433,14 +546,21 @@ def print_signal(
 def main():
 
     print()
-    print("=" * 80)
+    print(
+        "=" * 80
+    )
+
     print(
         "CRYPTO TRADING AGENT"
     )
+
     print(
         "FUTURES + SPOT + SCALPING"
     )
-    print("=" * 80)
+
+    print(
+        "=" * 80
+    )
 
     # ========================================================
     # PAPER TRADER
@@ -451,10 +571,16 @@ def main():
     )
 
     # ========================================================
-    # BTC REGIME
+    # LOAD BTC ONCE
     # ========================================================
 
-    btc_regime = get_btc_regime()
+    btc_data = load_data(
+        "BTCUSDT"
+    )
+
+    btc_regime = calculate_btc_regime(
+        btc_data
+    )
 
     print()
     print(
@@ -463,7 +589,7 @@ def main():
     )
 
     # ========================================================
-    # SYMBOLS
+    # SYMBOL DISCOVERY
     # ========================================================
 
     symbols = discover_symbols()
@@ -484,20 +610,47 @@ def main():
 
         try:
 
+            # BTC verisini tekrar çekme.
+            if symbol == "BTCUSDT":
+
+                data = btc_data
+
+            else:
+
+                data = load_data(
+                    symbol
+                )
+
             signals = analyze_symbol(
-                symbol,
-                btc_regime,
+                symbol=symbol,
+                btc_regime=btc_regime,
+                data=data,
             )
 
             for signal in signals:
 
-                if signal.get(
-                    "direction"
-                ) != "WAIT":
+                if not isinstance(
+                    signal,
+                    dict,
+                ):
+                    continue
 
-                    all_signals.append(
-                        signal
+                direction = str(
+                    signal.get(
+                        "direction",
+                        "WAIT",
                     )
+                ).upper()
+
+                if direction not in (
+                    "LONG",
+                    "SHORT",
+                ):
+                    continue
+
+                all_signals.append(
+                    signal
+                )
 
         except Exception as exc:
 
@@ -507,14 +660,14 @@ def main():
             )
 
     # ========================================================
-    # AGGREGATE
+    # AGGREGATION
     # ========================================================
 
     aggregated = aggregate_signals(
-    all_signals,
-    min_score=MIN_AGGREGATED_SCORE,
-    min_confidence=MIN_AGGREGATED_CONFIDENCE,
-)
+        all_signals,
+        min_score=MIN_AGGREGATED_SCORE,
+        min_confidence=MIN_AGGREGATED_CONFIDENCE,
+    )
 
     # ========================================================
     # RISK FILTER
@@ -524,69 +677,116 @@ def main():
 
     for signal in aggregated:
 
-        if signal.get(
-            "direction"
-        ) == "WAIT":
-
+        if not isinstance(
+            signal,
+            dict,
+        ):
             continue
 
         result = get_final_signal(
             [signal],
             btc_regime=btc_regime,
-            min_confidence=60,
+            min_confidence=MIN_AGGREGATED_CONFIDENCE,
             min_rr=1.8,
         )
 
-        if result:
+        if result is None:
+            continue
 
-            final_signals.append(
-                result
-            )
+        result["execution_ready"] = True
+
+        final_signals.append(
+            result
+        )
 
     # ========================================================
     # RANK
     # ========================================================
 
-    final_signals.sort(
-        key=lambda x: (
-            float(
-                x.get(
+    def ranking(signal):
+
+        try:
+            confidence = float(
+                signal.get(
                     "confidence",
-                    0
+                    0,
                 )
-            ),
-            float(
-                x.get(
+            )
+        except (
+            TypeError,
+            ValueError,
+        ):
+            confidence = 0.0
+
+        try:
+            score = float(
+                signal.get(
+                    "score",
+                    0,
+                )
+            )
+        except (
+            TypeError,
+            ValueError,
+        ):
+            score = 0.0
+
+        try:
+            rr = float(
+                signal.get(
                     "rr",
-                    0
+                    0,
                 )
-            ),
-        ),
+            )
+        except (
+            TypeError,
+            ValueError,
+        ):
+            rr = 0.0
+
+        return (
+            confidence * 0.50
+            +
+            score * 4.0
+            +
+            min(rr, 4.0) * 5.0
+        )
+
+    final_signals.sort(
+        key=ranking,
         reverse=True,
     )
 
-    final_signals = (
-        final_signals[
-            :MAX_SIGNALS
-        ]
-    )
+    final_signals = final_signals[
+        :MAX_SIGNALS
+    ]
 
     # ========================================================
-    # PRINT
+    # FINAL SIGNALS
     # ========================================================
 
     print()
-    print("=" * 80)
+    print(
+        "=" * 80
+    )
+
     print(
         "FINAL SIGNALS"
     )
-    print("=" * 80)
+
+    print(
+        "=" * 80
+    )
 
     if not final_signals:
 
         print(
             "No qualified signals."
         )
+
+    # ========================================================
+    # PAPER EXECUTION
+    # ========================================================
 
     for signal in final_signals:
 
@@ -595,19 +795,96 @@ def main():
         )
 
         # ----------------------------------------------------
+        # MAX OPEN POSITION CHECK
+        # ----------------------------------------------------
+
+        status = paper.status()
+
+        open_positions = status.get(
+            "open_positions",
+            {}
+        )
+
+        if len(open_positions) >= MAX_OPEN_POSITIONS:
+
+            print(
+                "PAPER: "
+                "SKIPPED - "
+                "MAX OPEN POSITIONS"
+            )
+
+            continue
+
+        # ----------------------------------------------------
+        # DUPLICATE POSITION CHECK
+        # ----------------------------------------------------
+
+        symbol = str(
+            signal.get(
+                "symbol",
+                "",
+            )
+        ).upper()
+
+        if symbol in open_positions:
+
+            print(
+                "PAPER: "
+                "SKIPPED - "
+                "POSITION ALREADY EXISTS"
+            )
+
+            continue
+
+        # ----------------------------------------------------
+        # RISK AMOUNT
+        # ----------------------------------------------------
+
+        risk_amount = (
+            paper.balance
+            *
+            float(RISK_PER_TRADE)
+        )
+
+        if risk_amount <= 0:
+
+            print(
+                "PAPER: "
+                "SKIPPED - "
+                "INVALID RISK"
+            )
+
+            continue
+
+        # ----------------------------------------------------
         # PAPER ENTRY
         # ----------------------------------------------------
 
         result = paper.open_position(
-            symbol=signal["symbol"],
-            side=signal["direction"],
-            entry=signal["entry"],
-            stop=signal["stop"],
-            tp1=signal["tp1"],
-            tp2=signal["tp2"],
-            risk_amount=(
-    paper.balance * RISK_PER_TRADE
-),
+
+            symbol=symbol,
+
+            side=signal[
+                "direction"
+            ],
+
+            entry=signal[
+                "entry"
+            ],
+
+            stop=signal[
+                "stop"
+            ],
+
+            tp1=signal[
+                "tp1"
+            ],
+
+            tp2=signal[
+                "tp2"
+            ],
+
+            risk_amount=risk_amount,
         )
 
         print(
@@ -620,11 +897,17 @@ def main():
     # ========================================================
 
     print()
-    print("=" * 80)
+    print(
+        "=" * 80
+    )
+
     print(
         "PAPER ACCOUNT"
     )
-    print("=" * 80)
+
+    print(
+        "=" * 80
+    )
 
     print(
         paper.status()
@@ -636,4 +919,5 @@ def main():
 # ============================================================
 
 if __name__ == "__main__":
+
     main()
