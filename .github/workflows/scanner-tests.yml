@@ -14,4 +14,4 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install --upgrade pip
       - run: pip install pandas requests pytest
-      - run: pytest -q tests/test_early_breakout.py
+      - run: python -m pytest -q tests/test_early_breakout.py
