@@ -35,6 +35,7 @@ Human Decision
 - Deterministic multi-timeframe technical analysis.
 - Agent-Reach health check and optional Exa/RSS event-intelligence layer. Agent-Reach is used as the internet capability router; its upstream tools remain responsible for actual platform reads/searches.
 - Early-warning alerts and persistent analysis history.
+- Optional cached CryptoMeter confirmation layer for AI Screener, Rapid Movements V2, Volume Flow, LS Ratio and liquidation data.
 - Unit tests, compile check and a public-exchange live smoke test in GitHub Actions.
 
 ## Run
@@ -53,6 +54,9 @@ export LILITH_SYMBOLS=BTCUSDT,ETHUSDT
 export LILITH_EXCHANGES=binance,bybit,okx
 export LILITH_INTERVAL=30
 export LILITH_DB=data/lilith.db
+export CRYPTOMETER_ENABLED=1
+export CRYPTOMETER_API_KEY=YOUR_API_KEY
+export CRYPTOMETER_CACHE_SECONDS=300
 ```
 
 For Agent-Reach-backed event search, install/configure Agent-Reach and its upstream tools on the host, then verify with:
@@ -61,7 +65,11 @@ For Agent-Reach-backed event search, install/configure Agent-Reach and its upstr
 agent-reach doctor --json
 ```
 
-The system degrades gracefully when Agent-Reach or a particular exchange is unavailable; it does not fabricate missing OI/CVD/news confirmation.
+The system degrades gracefully when Agent-Reach, CryptoMeter, or a particular exchange is unavailable; it does not fabricate missing OI/CVD/news confirmation. CryptoMeter failures are treated as missing confirmation rather than a standalone trade signal.
+
+### CryptoMeter integration
+
+Set `CRYPTOMETER_API_KEY` in the runtime environment or GitHub Actions secret; never commit the key. The integration is disabled automatically when no key is present. Responses are cached (default 5 minutes) to reduce API usage and respect provider rate limits. CryptoMeter is used as a secondary confirmation layer; the local Binance/Bybit/OKX data remains the primary market-data source.
 
 ## Existing early-breakout scanner
 
