@@ -38,6 +38,13 @@ def analyze_symbol(symbol: str, frames: dict[str, Any], market: dict[str, Any], 
     elif oi_change < -1.0: reasons.append("OI contraction / deleveraging")
     if ob > 0.15: score += 4; reasons.append("orderbook bid imbalance")
     elif ob < -0.15: score -= 4; reasons.append("orderbook ask imbalance")
+    cm = market.get("cryptometer") or {}
+    if cm.get("enabled"):
+        cm_score = float(cm.get("score", 0.0))
+        score += cm_score * 10.0
+        if cm_score > 0.2: reasons.append(f"CryptoMeter corroboration bullish ({cm_score:+.2f})")
+        elif cm_score < -0.2: reasons.append(f"CryptoMeter corroboration bearish ({cm_score:+.2f})")
+        else: reasons.append("CryptoMeter signal neutral/mixed")
     event_sent = mean([e.sentiment for e in events]) if events else 0.0; event_rel = mean([e.relevance for e in events]) if events else 0.0
     score += event_sent * 6 * event_rel
     if events: reasons.append(f"event intelligence: {len(events)} relevant items")
