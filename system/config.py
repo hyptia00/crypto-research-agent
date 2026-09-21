@@ -19,6 +19,10 @@ class Settings:
     database_path: str = "data/lilith.db"
     agent_reach_enabled: bool = True
     alert_threshold: float = 70.0
+    cryptometer_api_key: str = ""
+    cryptometer_enabled: bool = False
+    cryptometer_timeout_seconds: int = 10
+    cryptometer_cache_seconds: int = 300
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -37,5 +41,5 @@ class Settings:
             event_timeout_seconds=int(os.getenv("LILITH_EVENT_TIMEOUT", "12")),
             database_path=os.getenv("LILITH_DB", "data/lilith.db"),
             agent_reach_enabled=os.getenv("LILITH_AGENT_REACH", "1") not in {"0", "false", "False"},
-            alert_threshold=float(os.getenv("LILITH_ALERT_THRESHOLD", "70")),
+            alert_threshold=float(os.getenv("LILITH_ALERT_THRESHOLD", "70")),\n            cryptometer_api_key=os.getenv("CRYPTOMETER_API_KEY", ""),\n            cryptometer_enabled=os.getenv("CRYPTOMETER_ENABLED", "1") not in {"0", "false", "False"},\n            cryptometer_timeout_seconds=int(os.getenv("CRYPTOMETER_TIMEOUT", "10")),\n            cryptometer_cache_seconds=int(os.getenv("CRYPTOMETER_CACHE_SECONDS", "300")),
         )
