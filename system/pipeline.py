@@ -8,6 +8,7 @@ from typing import Any
 from .alerts import detect_alerts
 from .analysis import analyze_symbol
 from .config import Settings
+from .cryptometer import CryptoMeterClient, CryptoMeterConfig
 from .event_intel import EventIntel
 from .exchanges import depth_imbalance, make_exchange, trade_delta
 from .storage import Store
@@ -23,6 +24,13 @@ class TradingIntelligence:
         self.events = EventIntel(self.settings.agent_reach_enabled, self.settings.event_timeout_seconds)
         self.clients = {name: make_exchange(name) for name in self.settings.exchanges}
         self.cvd_history: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=50))
+        self.cryptometer = CryptoMeterClient(
+            CryptoMeterConfig(
+                api_key=self.settings.cryptometer_api_key if self.settings.cryptometer_enabled else "",
+                timeout_seconds=self.settings.cryptometer_timeout_seconds,
+                cache_seconds=self.settings.cryptometer_cache_seconds,
+            )
+        )
 
     def _exchange_snapshot(self, name: str, symbol: str) -> dict[str, Any] | None:
         client = self.clients[name]
@@ -84,6 +92,8 @@ class TradingIntelligence:
             return {"symbol": symbol, "status": "PARTIAL_DATA", "market": market, "error": str(exc), "exchanges": market_rows}
 
         events = self.events.collect(symbol, self.settings.event_limit)
+        cryptometer = self.cryptometer.signal(symbol)
+        market["cryptometer"] = cryptometer
         result = analyze_symbol(symbol, frames, market, events)
         alerts = detect_alerts(symbol, market, result.to_dict(), self.settings.alert_threshold)
         data = result.to_dict()
