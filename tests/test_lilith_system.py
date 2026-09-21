@@ -8,6 +8,7 @@ import pandas as pd
 from system.alerts import detect_alerts
 from system.analysis import analyze_symbol
 from system.exchanges import depth_imbalance, trade_delta
+from system.cryptometer import CryptoMeterClient, CryptoMeterConfig
 from system.models import Event
 from system.storage import Store
 from system.technical import enrich, structure
@@ -49,3 +50,32 @@ def test_store_roundtrip():
         store = Store(f.name)
         store.add_snapshot("2026-01-01T00:00:00+00:00", "binance", "BTCUSDT", {"oi": 10, "cvd": 2})
         assert store.previous_snapshot("binance", "BTCUSDT")["oi"] == 10
+
+
+def test_cryptometer_disabled():
+    client = CryptoMeterClient(CryptoMeterConfig(api_key=""))
+    assert client.signal("BTCUSDT") == {"enabled": False}
+
+
+def test_cryptometer_signal(monkeypatch):
+    client = CryptoMeterClient(CryptoMeterConfig(api_key="secret", cache_seconds=300))
+
+    def fake_get(path, params=None):
+        if path == "/rapid-movements-v2/":
+            return {"data": [{"symbol": "HOLO", "direction": "up", "type": "breakout24hUp"}]}
+        if path == "/ai-screener/":
+            return {"data": [{"symbol": "HOLO", "side": "BUY"}]}
+        if path == "/volume-flow/":
+            return {"data": {"inflow": [{"to": "HOLO", "volume": 1000}], "outflow": [{"from": "HOLO", "volume": 100}]}}
+        if path == "/ls-ratio/":
+            return {"data": [{"ratio": "1.2"}]}
+        if path == "/liquidation-data-v2/":
+            return {"data": [{"binance_futures": {"longs": 100, "shorts": 200}}]}
+        raise AssertionError(path)
+
+    monkeypatch.setattr(client, "_get", fake_get)
+    result = client.signal("HOLOUSDT")
+    assert result["enabled"] is True
+    assert result["score"] > 0
+    assert result["ai"]["side"] == "BUY"
+    assert result["liquidations"]["shorts"] == 200
